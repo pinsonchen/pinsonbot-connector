@@ -1,0 +1,41 @@
+{
+  "name": "pinsonbot-connector",
+  "version": "2.0.0",
+  "description": "OpenClaw plugin for PinsonBots Platform integration",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --respawn src/index.ts",
+    "lint": "eslint src/**/*.ts",
+    "test": "jest"
+  },
+  "keywords": [
+    "openclaw",
+    "pinsonbot",
+    "wechat",
+    "chatbot",
+    "plugin"
+  ],
+  "author": "PinsonBots Team",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.16.0",
+    "axios": "^1.6.5",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@types/ws": "^8.5.10",
+    "@types/uuid": "^9.0.7",
+    "typescript": "^5.3.3",
+    "ts-node-dev": "^2.0.0",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/parser": "^6.18.1",
+    "@typescript-eslint/eslint-plugin": "^6.18.1",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.11",
+    "ts-jest": "^29.1.1"
+  }
+}
