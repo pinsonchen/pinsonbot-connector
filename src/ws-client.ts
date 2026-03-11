@@ -184,7 +184,7 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   sendAssistantResponse(content: string, sessionId: string): boolean {
     return this.sendMessage({
-      type: "message",
+      type: "bot_response",
       data: {
         content,
         session_id: sessionId,
