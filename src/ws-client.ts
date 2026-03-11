@@ -278,17 +278,28 @@ export class PinsonBotWSClient extends EventEmitter {
    * Handle incoming messages
    */
   private handleMessage(message: WSMessage): void {
+    console.log(`[PinsonBotWS] DEBUG received message: ${JSON.stringify(message)}`);
+    
     switch (message.type) {
       case "connected":
         console.log("[PinsonBotWS] Server confirmed connection");
         break;
 
       case "message":
+      case "user_message":
         // User message from platform
+        // Handle nested message structure: message.data.data.content
+        const innerData = message.data?.data || message.data;
+        const content = innerData?.content || innerData?.text || "";
+        const sessionId = innerData?.session_id || innerData?.sessionId || message.data?.session_id || "";
+        const conversationId = innerData?.conversation_id || innerData?.conversationId || message.data?.conversation_id;
+        
+        console.log(`[PinsonBotWS] Emitting user_message: content="${content?.substring(0, 50)}", sessionId="${sessionId}"`);
+        
         this.emit("user_message", {
-          content: message.data.content,
-          sessionId: message.data.session_id,
-          conversationId: message.data.conversation_id,
+          content,
+          sessionId,
+          conversationId,
           timestamp: message.timestamp,
         });
         break;

@@ -369,17 +369,22 @@ async function handleInboundMessage(
 ): Promise<void> {
   const { content, sessionId, conversationId } = message;
 
+  // Debug: log the full message structure
+  ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify(message)}`);
+
   const stats = getInboundCounters(account.accountId);
   stats.received += 1;
 
+  // Safety check for undefined content
+  const safeContent = content || "";
   ctx.log?.info?.(
-    `[${account.accountId}] User message: ${content.substring(0, 100)}${
-      content.length > 100 ? "..." : ""
+    `[${account.accountId}] User message: ${safeContent.substring(0, 100)}${
+      safeContent.length > 100 ? "..." : ""
     }`
   );
 
   // Message deduplication
-  const dedupKey = `${account.accountId}:${sessionId}:${content}:${Date.now()}`;
+  const dedupKey = `${account.accountId}:${sessionId}:${safeContent}:${Date.now()}`;
   if (isMessageProcessed(dedupKey)) {
     ctx.log?.debug?.(`[${account.accountId}] Skipping duplicate message`);
     stats.dedupSkipped += 1;
@@ -403,29 +408,57 @@ async function handleInboundMessage(
   client.sendTypingIndicator(sessionId, true);
 
   try {
-    // Dispatch to Gateway AI with real streaming
+    // Check if channelRuntime is available for AI dispatch
+    if (!ctx.channelRuntime?.reply) {
+      ctx.log?.error?.(`[${account.accountId}] channelRuntime.reply not available - cannot dispatch AI`);
+      client.sendTypingIndicator(sessionId, false);
+      client.sendAssistantResponse("⚠️ AI 服务配置错误，请联系管理员", sessionId);
+      stats.failed += 1;
+      return;
+    }
+
     let fullResponse = "";
 
-    await dispatchToGatewayStreaming(
-      ctx,
-      content,
-      sessionId,
-      account,
-      (token: string) => {
-        // Send each token as it arrives from OpenClaw
-        fullResponse += token;
-        client.sendStreamToken(token, sessionId);
-      }
-    );
+    // Use OpenClaw's reply dispatcher for AI response
+    ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher...`);
+    
+    const result = await ctx.channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: {
+        cfg: ctx.cfg,
+        peerId: sessionId,
+        text: safeContent,
+        Body: safeContent,
+        BodyForAgent: safeContent,
+        SessionKey: `pinsonbot:${sessionId}`,
+        AccountId: account.accountId,
+        ChatType: "direct",
+        From: sessionId,
+      } as any,
+      cfg: ctx.cfg,
+      dispatcherOptions: {
+        deliver: async (payload) => {
+          ctx.log?.info?.(`[${account.accountId}] deliver callback called: ${JSON.stringify(payload).substring(0, 100)}`);
+          const text = payload.text || "";
+          if (text) {
+            fullResponse += text;
+            client.sendStreamToken(text, sessionId);
+          }
+        },
+      },
+    });
+    
+    ctx.log?.info?.(`[${account.accountId}] dispatchReply result: ${JSON.stringify(result).substring(0, 200)}`);
 
     // End typing
     client.sendTypingIndicator(sessionId, false);
 
     // Send final complete message (for persistence)
-    client.sendAssistantResponse(fullResponse, sessionId, conversationId);
+    if (fullResponse) {
+      client.sendAssistantResponse(fullResponse, sessionId, conversationId);
+    }
 
     ctx.log?.info?.(
-      `[${account.accountId}] AI response (streamed): ${fullResponse.substring(0, 100)}${
+      `[${account.accountId}] AI response: ${fullResponse.substring(0, 100)}${
         fullResponse.length > 100 ? "..." : ""
       }`
     );
@@ -455,30 +488,7 @@ async function handleInboundMessage(
 // ============ Gateway AI Dispatch ============
 
 /**
- * Dispatch a user message to OpenClaw Gateway AI (non-streaming).
- */
-async function dispatchToGateway(
-  ctx: GatewayStartContext,
-  message: string,
-  sessionId: string,
-  account: ResolvedAccount
-): Promise<string> {
-  const sendToGateway = (ctx as any).sendToGateway;
-  if (typeof sendToGateway === "function") {
-    const response = await sendToGateway({
-      peerId: sessionId,
-      text: message,
-      accountId: account.accountId,
-    });
-    return response.text || response.content || "⚠️ 未收到回复";
-  }
-
-  ctx.log?.error?.(`[${account.accountId}] sendToGateway not available in context`);
-  return "⚠️ AI 服务暂时不可用";
-}
-
-/**
- * Dispatch a user message to OpenClaw Gateway AI with streaming response.
+ * Dispatch a user message to OpenClaw Gateway AI using channelRuntime.
  */
 async function dispatchToGatewayStreaming(
   ctx: GatewayStartContext,
@@ -487,56 +497,54 @@ async function dispatchToGatewayStreaming(
   account: ResolvedAccount,
   onToken: (token: string) => void
 ): Promise<string> {
-  const sendToGateway = (ctx as any).sendToGateway;
-  const streamChat = (ctx as any).streamChat;
-
-  // Try to use native streaming if available
-  if (typeof streamChat === "function") {
-    try {
-      const stream = await streamChat({
-        peerId: sessionId,
-        text: message,
-        accountId: account.accountId,
-      });
-
-      let fullResponse = "";
-
-      for await (const chunk of stream) {
-        const token = chunk.text || chunk.content || chunk.token || "";
-        if (token) {
-          fullResponse += token;
-          onToken(token);
-        }
-      }
-
-      return fullResponse || "⚠️ 未收到回复";
-    } catch (error: any) {
-      ctx.log?.error?.(`[${account.accountId}] Streaming error: ${error.message}`);
-      // Fall back to non-streaming
-    }
+  // Check if channelRuntime is available
+  if (!ctx.channelRuntime) {
+    ctx.log?.error?.(`[${account.accountId}] channelRuntime not available in context`);
+    return "⚠️ AI 服务暂时不可用（channelRuntime 未初始化）";
   }
 
-  // Fallback: use non-streaming and simulate tokens
-  if (typeof sendToGateway === "function") {
-    const response = await sendToGateway({
-      peerId: sessionId,
-      text: message,
-      accountId: account.accountId,
+  const { reply, routing } = ctx.channelRuntime;
+
+  if (!reply) {
+    ctx.log?.error?.(`[${account.accountId}] channelRuntime.reply not available`);
+    return "⚠️ AI 服务暂时不可用";
+  }
+
+  try {
+    // Build session key directly
+    const sessionKey = `pinsonbot:${sessionId}`;
+
+    ctx.log?.info?.(`[${account.accountId}] Dispatching to AI, sessionKey=${sessionKey}, message="${message}"`);
+
+    let fullResponse = "";
+
+    // Use dispatchReplyWithBufferedBlockDispatcher with proper MsgContext
+    const result = await reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: {
+        channel: "pinsonbot",
+        peer: { id: sessionId, kind: "direct" },
+        Body: message,
+        BodyForAgent: message,
+        text: message,
+        sessionKey,
+        AccountId: account.accountId,
+        ChatType: "direct",
+      } as any,
+      cfg: ctx.cfg,
+      dispatcherOptions: {
+        deliver: async (payload: any) => {
+          const text = payload.text || "";
+          if (text) {
+            fullResponse += text;
+            onToken(text);
+          }
+        },
+      },
     });
 
-    const fullText = response.text || response.content || "⚠️ 未收到回复";
-
-    // Simulate streaming by breaking response into tokens
-    const tokens = fullText.split(/(\s+|[，。！？；：""''（）【】])/).filter((t: string) => t.length > 0);
-    for (const token of tokens) {
-      onToken(token);
-      // Small delay to simulate real streaming
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-
-    return fullText;
+    return fullResponse || "⚠️ 未收到回复";
+  } catch (error: any) {
+    ctx.log?.error?.(`[${account.accountId}] AI dispatch error: ${error.message}`);
+    return `⚠️ 处理失败：${error.message}`;
   }
-
-  ctx.log?.error?.(`[${account.accountId}] sendToGateway not available in context`);
-  return "⚠️ AI 服务暂时不可用";
 }
