@@ -37,6 +37,8 @@ export class PinsonBotWSClient extends EventEmitter {
   private messageQueue: QueuedMessage[] = [];
   private healthCheckInterval?: NodeJS.Timeout;
   private lastPongTime?: number;
+  private conversationHistory: Map<string, Array<{role: string; content: string; timestamp: string}>> = new Map();
+  private maxHistoryLength: number = 100;
 
   constructor(
     lobsterId: string,
@@ -183,6 +185,9 @@ export class PinsonBotWSClient extends EventEmitter {
    * Send assistant response
    */
   sendAssistantResponse(content: string, sessionId: string, conversationId?: number): boolean {
+    // Store assistant message in history
+    this.storeMessage(sessionId, "assistant", content);
+    
     const data: any = {
       content,
       session_id: sessionId,
@@ -268,13 +273,80 @@ export class PinsonBotWSClient extends EventEmitter {
     lobsterId: string;
     queueLength: number;
     reconnectAttempts: number;
+    historySessions: number;
   } {
     return {
       connected: this.isConnected(),
       lobsterId: this.lobsterId,
       queueLength: this.messageQueue.length,
       reconnectAttempts: this.reconnectAttempts,
+      historySessions: this.conversationHistory.size,
     };
+  }
+
+  /**
+   * Store message in conversation history
+   */
+  private storeMessage(sessionId: string, role: "user" | "assistant", content: string): void {
+    if (!this.conversationHistory.has(sessionId)) {
+      this.conversationHistory.set(sessionId, []);
+    }
+    
+    const history = this.conversationHistory.get(sessionId)!;
+    history.push({
+      role,
+      content,
+      timestamp: new Date().toISOString(),
+    });
+    
+    // Limit history length
+    if (history.length > this.maxHistoryLength) {
+      history.shift();
+    }
+  }
+
+  /**
+   * Handle history request from platform
+   */
+  private handleHistoryRequest(data: { session_id: string; limit?: number }): void {
+    const { session_id, limit = 20 } = data;
+    const history = this.conversationHistory.get(session_id) || [];
+    
+    // Get last N messages
+    const messages = history.slice(-limit);
+    
+    // Send history response
+    this.sendMessage({
+      type: "history_response",
+      data: {
+        session_id,
+        lobster_id: this.lobsterId,
+        messages,
+        total: history.length,
+      },
+      timestamp: new Date().toISOString(),
+    });
+    
+    console.log(`[PinsonBotWS] Sent history_response: ${messages.length} messages for session ${session_id}`);
+  }
+
+  /**
+   * Get conversation history for a session
+   */
+  getHistory(sessionId: string, limit?: number): Array<{role: string; content: string; timestamp: string}> {
+    const history = this.conversationHistory.get(sessionId) || [];
+    return limit ? history.slice(-limit) : history;
+  }
+
+  /**
+   * Clear conversation history for a session
+   */
+  clearHistory(sessionId?: string): void {
+    if (sessionId) {
+      this.conversationHistory.delete(sessionId);
+    } else {
+      this.conversationHistory.clear();
+    }
   }
 
   /**
@@ -299,6 +371,9 @@ export class PinsonBotWSClient extends EventEmitter {
         
         console.log(`[PinsonBotWS] Emitting user_message: content="${content?.substring(0, 50)}", sessionId="${sessionId}"`);
         
+        // Store user message in history
+        this.storeMessage(sessionId, "user", content);
+        
         this.emit("user_message", {
           content,
           sessionId,
@@ -313,6 +388,12 @@ export class PinsonBotWSClient extends EventEmitter {
           sessionId: message.data.session_id,
           messages: message.data.messages,
         });
+        break;
+
+      case "history_request":
+        // Platform requests conversation history
+        console.log(`[PinsonBotWS] History request for session: ${message.data?.session_id}`);
+        this.handleHistoryRequest(message.data);
         break;
 
       case "error":
