@@ -1,10 +1,12 @@
 {
   "name": "pinsonbot-connector",
-  "version": "2.0.0",
-  "description": "OpenClaw plugin for PinsonBots Platform integration",
-  "main": "dist/index.js",
+  "version": "2.1.0",
+  "description": "OpenClaw Channel Plugin for PinsonBots Platform integration",
+  "main": "index.ts",
+  "type": "module",
   "scripts": {
     "build": "tsc",
+    "type-check": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn src/index.ts",
     "lint": "eslint src/**/*.ts",
@@ -15,20 +17,19 @@
     "pinsonbot",
     "wechat",
     "chatbot",
-    "plugin"
+    "plugin",
+    "channel"
   ],
   "author": "PinsonBots Team",
   "license": "MIT",
   "dependencies": {
     "ws": "^8.16.0",
     "axios": "^1.6.5",
-    "dotenv": "^16.3.1",
-    "uuid": "^9.0.1"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20.10.6",
     "@types/ws": "^8.5.10",
-    "@types/uuid": "^9.0.7",
     "typescript": "^5.3.3",
     "ts-node-dev": "^2.0.0",
     "eslint": "^8.56.0",
@@ -37,5 +38,8 @@
     "jest": "^29.7.0",
     "@types/jest": "^29.5.11",
     "ts-jest": "^29.1.1"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.2.13"
   }
 }

@@ -1,6 +1,6 @@
 /**
  * WebSocket client for PinsonBots Platform Plugin endpoint
- * 
+ *
  * Features:
  * - Per-lobster authentication with internal_token
  * - Automatic reconnection with exponential backoff
@@ -8,8 +8,9 @@
  * - Health check monitoring
  */
 
-import WebSocket from 'ws';
-import { EventEmitter } from 'events';
+import WebSocket from "ws";
+import { EventEmitter } from "events";
+import type { PinsonBotMessage } from "./types.js";
 
 interface WSMessage {
   type: string;
@@ -29,7 +30,7 @@ export class PinsonBotWSClient extends EventEmitter {
   private internalToken: string;
   private endpoint: string;
   private connected: boolean = false;
-  private reconnectAttempts: number= 0;
+  private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number;
   private reconnectDelay: number;
   private reconnectBackoff: number;
@@ -40,7 +41,7 @@ export class PinsonBotWSClient extends EventEmitter {
   constructor(
     lobsterId: string,
     internalToken: string,
-   endpoint: string = 'ws://localhost:8000/pinsonbots/internal/plugin',
+    endpoint: string = "wss://tools.pinsonbot.com/pinsonbots/internal/plugin",
     options: {
       maxReconnectAttempts?: number;
       reconnectDelay?: number;
@@ -48,20 +49,20 @@ export class PinsonBotWSClient extends EventEmitter {
     } = {}
   ) {
     super();
-    
+
     this.lobsterId = lobsterId;
     this.internalToken = internalToken;
     this.endpoint = endpoint;
-    
+
     // Connection options
     this.maxReconnectAttempts = options.maxReconnectAttempts || 5;
     this.reconnectDelay = options.reconnectDelay || 5000;
     this.reconnectBackoff = options.reconnectBackoff || 2;
-    
+
     // Build WebSocket URL with authentication
     const url = new URL(endpoint);
-    url.searchParams.append('token', this.internalToken);
-    url.searchParams.append('lobster_id', this.lobsterId);
+    url.searchParams.append("token", this.internalToken);
+    url.searchParams.append("lobster_id", this.lobsterId);
     this.endpoint = url.toString();
   }
 
@@ -69,61 +70,66 @@ export class PinsonBotWSClient extends EventEmitter {
    * Connect to PinsonBots Platform
    */
   connect(): void {
-    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
-      console.log('[PinsonBotWS] Already connecting or connected');
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING ||
+        this.ws.readyState === WebSocket.OPEN)
+    ) {
+      console.log("[PinsonBotWS] Already connecting or connected");
       return;
     }
 
     console.log(`[PinsonBotWS] Connecting to ${this.endpoint}`);
-    
+
     try {
       this.ws = new WebSocket(this.endpoint);
 
-      this.ws.on('open', () => {
-        console.log('[PinsonBotWS] Connected successfully');
+      this.ws.on("open", () => {
+        console.log("[PinsonBotWS] Connected successfully");
         this.connected = true;
         this.reconnectAttempts = 0;
-        this.emit('connected', { lobsterId: this.lobsterId });
-        
+        this.emit("connected", { lobsterId: this.lobsterId });
+
         // Start health check
         this.startHealthCheck();
-        
+
         // Process queued messages
         this.processMessageQueue();
       });
 
-      this.ws.on('message', (data: Buffer) => {
+      this.ws.on("message", (data: Buffer) => {
         try {
           const message: WSMessage = JSON.parse(data.toString());
           this.handleMessage(message);
         } catch (error) {
-          console.error('[PinsonBotWS] Failed to parse message:', error);
-          this.emit('error', { type: 'parse_error', error });
+          console.error("[PinsonBotWS] Failed to parse message:", error);
+          this.emit("error", { type: "parse_error", error });
         }
       });
 
-      this.ws.on('pong', () => {
+      this.ws.on("pong", () => {
         this.lastPongTime = Date.now();
       });
 
-      this.ws.on('close', (code: number, reason: Buffer) => {
-        console.log(`[PinsonBotWS] Disconnected: code=${code}, reason=${reason.toString()}`);
+      this.ws.on("close", (code: number, reason: Buffer) => {
+        console.log(
+          `[PinsonBotWS] Disconnected: code=${code}, reason=${reason.toString()}`
+        );
         this.connected = false;
         this.stopHealthCheck();
-        this.emit('disconnected', { code, reason: reason.toString() });
-        
+        this.emit("disconnected", { code, reason: reason.toString() });
+
         // Attempt reconnection
         this.scheduleReconnect(code);
       });
 
-      this.ws.on('error', (error: Error) => {
-        console.error('[PinsonBotWS] WebSocket error:', error);
-        this.emit('error', { type: 'websocket_error', error });
+      this.ws.on("error", (error: Error) => {
+        console.error("[PinsonBotWS] WebSocket error:", error);
+        this.emit("error", { type: "websocket_error", error });
       });
-
     } catch (error) {
-      console.error('[PinsonBotWS] Failed to create WebSocket:', error);
-      this.emit('error', { type: 'connection_error', error });
+      console.error("[PinsonBotWS] Failed to create WebSocket:", error);
+      this.emit("error", { type: "connection_error", error });
       this.scheduleReconnect(1006);
     }
   }
@@ -132,14 +138,14 @@ export class PinsonBotWSClient extends EventEmitter {
    * Disconnect from PinsonBots Platform
    */
   disconnect(): void {
-    console.log('[PinsonBotWS] Manual disconnect requested');
+    console.log("[PinsonBotWS] Manual disconnect requested");
     this.stopHealthCheck();
-    
+
     if (this.ws) {
-      this.ws.close(1000, 'Client disconnect');
+      this.ws.close(1000, "Client disconnect");
       this.ws = null;
     }
-    
+
     this.connected = false;
   }
 
@@ -147,24 +153,28 @@ export class PinsonBotWSClient extends EventEmitter {
    * Send a message to the platform
    */
   sendMessage(message: WSMessage): boolean {
-    if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (
+      !this.connected ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
+    ) {
       // Queue message for later delivery
-      console.log('[PinsonBotWS] Queueing message (not connected)');
+      console.log("[PinsonBotWS] Queueing message (not connected)");
       this.messageQueue.push({
         message,
         timestamp: Date.now(),
-        retryCount: 0
+        retryCount: 0,
       });
       return false;
     }
 
     try {
       this.ws.send(JSON.stringify(message));
-      console.log('[PinsonBotWS] Message sent:', message.type);
+      console.log("[PinsonBotWS] Message sent:", message.type);
       return true;
     } catch (error) {
-      console.error('[PinsonBotWS] Failed to send message:', error);
-      this.emit('error', { type: 'send_error', error, message });
+      console.error("[PinsonBotWS] Failed to send message:", error);
+      this.emit("error", { type: "send_error", error, message });
       return false;
     }
   }
@@ -174,13 +184,26 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   sendAssistantResponse(content: string, sessionId: string): boolean {
     return this.sendMessage({
-      type: 'message',
+      type: "message",
       data: {
         content,
         session_id: sessionId,
-        role: 'assistant'
+        role: "assistant",
       },
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Send typing indicator
+   */
+  sendTypingIndicator(sessionId: string, isTyping: boolean): boolean {
+    return this.sendMessage({
+      type: isTyping ? "typing_start" : "typing_end",
+      data: {
+        session_id: sessionId,
+      },
+      timestamp: new Date().toISOString(),
     });
   }
 
@@ -189,23 +212,23 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   requestHistory(sessionId: string): boolean {
     return this.sendMessage({
-      type: 'history_request',
+      type: "history_request",
       data: {
-        session_id: sessionId
-      }
+        session_id: sessionId,
+      },
     });
   }
 
   /**
    * Send connection status update
    */
-  sendStatusUpdate(status: 'connected' | 'disconnected' | 'busy'): boolean {
+  sendStatusUpdate(status: "connected" | "disconnected" | "busy"): boolean {
     return this.sendMessage({
-      type: 'status',
+      type: "status",
       data: {
         status,
-        timestamp: new Date().toISOString()
-      }
+        timestamp: new Date().toISOString(),
+      },
     });
   }
 
@@ -229,7 +252,7 @@ export class PinsonBotWSClient extends EventEmitter {
       connected: this.isConnected(),
       lobsterId: this.lobsterId,
       queueLength: this.messageQueue.length,
-      reconnectAttempts: this.reconnectAttempts
+      reconnectAttempts: this.reconnectAttempts,
     };
   }
 
@@ -238,36 +261,36 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   private handleMessage(message: WSMessage): void {
     switch (message.type) {
-      case 'connected':
-        console.log('[PinsonBotWS] Server confirmed connection');
+      case "connected":
+        console.log("[PinsonBotWS] Server confirmed connection");
         break;
 
-      case 'message':
+      case "message":
         // User message from platform
-        this.emit('user_message', {
+        this.emit("user_message", {
           content: message.data.content,
           sessionId: message.data.session_id,
-          timestamp: message.timestamp
+          timestamp: message.timestamp,
         });
         break;
 
-      case 'history':
+      case "history":
         // Conversation history response
-        this.emit('history', {
+        this.emit("history", {
           sessionId: message.data.session_id,
-          messages: message.data.messages
+          messages: message.data.messages,
         });
         break;
 
-      case 'error':
+      case "error":
         // Error from server
-        console.error('[PinsonBotWS] Server error:', message.data);
-        this.emit('server_error', message.data);
+        console.error("[PinsonBotWS] Server error:", message.data);
+        this.emit("server_error", message.data);
         break;
 
       default:
-        console.warn('[PinsonBotWS] Unknown message type:', message.type);
-        this.emit('unknown_message', message);
+        console.warn("[PinsonBotWS] Unknown message type:", message.type);
+        this.emit("unknown_message", message);
     }
   }
 
@@ -276,20 +299,24 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   private scheduleReconnect(closeCode: number): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[PinsonBotWS] Max reconnection attempts reached');
-      this.emit('max_reconnect_attempts_reached', {
-        attempts: this.reconnectAttempts
+      console.error("[PinsonBotWS] Max reconnection attempts reached");
+      this.emit("max_reconnect_attempts_reached", {
+        attempts: this.reconnectAttempts,
       });
       return;
     }
 
-    const delay = this.reconnectDelay * Math.pow(this.reconnectBackoff, this.reconnectAttempts);
+    const delay =
+      this.reconnectDelay *
+      Math.pow(this.reconnectBackoff, this.reconnectAttempts);
     this.reconnectAttempts++;
 
-    console.log(`[PinsonBotWS] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    console.log(
+      `[PinsonBotWS] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+    );
 
     setTimeout(() => {
-      console.log('[PinsonBotWS] Attempting reconnection...');
+      console.log("[PinsonBotWS] Attempting reconnection...");
       this.connect();
     }, delay);
   }
@@ -300,7 +327,7 @@ export class PinsonBotWSClient extends EventEmitter {
   private processMessageQueue(): void {
     while (this.messageQueue.length > 0 && this.isConnected()) {
       const queued = this.messageQueue.shift()!;
-      
+
       if (!this.sendMessage(queued.message)) {
         // Failed to send, put back in queue
         this.messageQueue.unshift(queued);
@@ -326,14 +353,16 @@ export class PinsonBotWSClient extends EventEmitter {
 
       // Check if we received a pong recently
       if (this.lastPongTime && Date.now() - this.lastPongTime > 60000) {
-        console.warn('[PinsonBotWS] No pong received in 60s, connection may be stale');
+        console.warn(
+          "[PinsonBotWS] No pong received in 60s, connection may be stale"
+        );
       }
 
       // Send ping
       try {
         this.ws!.ping();
       } catch (error) {
-        console.error('[PinsonBotWS] Ping failed:', error);
+        console.error("[PinsonBotWS] Ping failed:", error);
       }
     }, 30000);
   }

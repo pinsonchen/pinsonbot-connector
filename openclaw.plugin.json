@@ -1,0 +1,51 @@
+{
+  "id": "pinsonbot",
+  "name": "pinsonbot",
+  "version": "2.1.0",
+  "description": "PinsonBots Platform WebSocket channel plugin for OpenClaw",
+  "main": "index.ts",
+  "type": "module",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "endpoint": {
+        "type": "string",
+        "default": "wss://tools.pinsonbot.com/pinsonbots/internal/plugin"
+      },
+      "accounts": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "lobsterId": { "type": "string" },
+            "internalToken": { "type": "string" },
+            "name": { "type": "string" }
+          },
+          "required": ["lobsterId", "internalToken"]
+        }
+      },
+      "retry": {
+        "type": "object",
+        "properties": {
+          "maxAttempts": { "type": "number", "default": 5 },
+          "delayMs": { "type": "number", "default": 5000 },
+          "backoffMultiplier": { "type": "number", "default": 2 }
+        }
+      },
+      "healthCheck": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "intervalMs": { "type": "number", "default": 30000 }
+        }
+      }
+    }
+  },
+  "openclaw": {
+    "minVersion": "2026.2.13",
+    "channels": ["pinsonbot"]
+  }
+}
