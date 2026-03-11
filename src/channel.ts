@@ -403,18 +403,30 @@ async function handleInboundMessage(
   client.sendTypingIndicator(sessionId, true);
 
   try {
-    // Dispatch to Gateway AI via the SDK runtime
-    const response = await dispatchToGateway(ctx, content, sessionId, account);
+    // Dispatch to Gateway AI with real streaming
+    let fullResponse = "";
 
-    // Send AI response with streaming effect (typing)
-    await client.sendStreamingResponse(response, sessionId, conversationId, {
-      charDelay: 30,  // 30ms per chunk
-      chunkSize: 2,   // 2 characters per chunk
-    });
+    await dispatchToGatewayStreaming(
+      ctx,
+      content,
+      sessionId,
+      account,
+      (token: string) => {
+        // Send each token as it arrives from OpenClaw
+        fullResponse += token;
+        client.sendStreamToken(token, sessionId);
+      }
+    );
+
+    // End typing
+    client.sendTypingIndicator(sessionId, false);
+
+    // Send final complete message (for persistence)
+    client.sendAssistantResponse(fullResponse, sessionId, conversationId);
 
     ctx.log?.info?.(
-      `[${account.accountId}] AI response (streaming): ${response.substring(0, 100)}${
-        response.length > 100 ? "..." : ""
+      `[${account.accountId}] AI response (streamed): ${fullResponse.substring(0, 100)}${
+        fullResponse.length > 100 ? "..." : ""
       }`
     );
 
@@ -443,9 +455,7 @@ async function handleInboundMessage(
 // ============ Gateway AI Dispatch ============
 
 /**
- * Dispatch a user message to OpenClaw Gateway AI.
- *
- * Uses the OpenClaw Plugin SDK runtime chat dispatch.
+ * Dispatch a user message to OpenClaw Gateway AI (non-streaming).
  */
 async function dispatchToGateway(
   ctx: GatewayStartContext,
@@ -453,7 +463,6 @@ async function dispatchToGateway(
   sessionId: string,
   account: ResolvedAccount
 ): Promise<string> {
-  // Use SDK runtime chat dispatch via the context
   const sendToGateway = (ctx as any).sendToGateway;
   if (typeof sendToGateway === "function") {
     const response = await sendToGateway({
@@ -464,7 +473,70 @@ async function dispatchToGateway(
     return response.text || response.content || "⚠️ 未收到回复";
   }
 
-  // Fallback if SDK method not available
+  ctx.log?.error?.(`[${account.accountId}] sendToGateway not available in context`);
+  return "⚠️ AI 服务暂时不可用";
+}
+
+/**
+ * Dispatch a user message to OpenClaw Gateway AI with streaming response.
+ */
+async function dispatchToGatewayStreaming(
+  ctx: GatewayStartContext,
+  message: string,
+  sessionId: string,
+  account: ResolvedAccount,
+  onToken: (token: string) => void
+): Promise<string> {
+  const sendToGateway = (ctx as any).sendToGateway;
+  const streamChat = (ctx as any).streamChat;
+
+  // Try to use native streaming if available
+  if (typeof streamChat === "function") {
+    try {
+      const stream = await streamChat({
+        peerId: sessionId,
+        text: message,
+        accountId: account.accountId,
+      });
+
+      let fullResponse = "";
+
+      for await (const chunk of stream) {
+        const token = chunk.text || chunk.content || chunk.token || "";
+        if (token) {
+          fullResponse += token;
+          onToken(token);
+        }
+      }
+
+      return fullResponse || "⚠️ 未收到回复";
+    } catch (error: any) {
+      ctx.log?.error?.(`[${account.accountId}] Streaming error: ${error.message}`);
+      // Fall back to non-streaming
+    }
+  }
+
+  // Fallback: use non-streaming and simulate tokens
+  if (typeof sendToGateway === "function") {
+    const response = await sendToGateway({
+      peerId: sessionId,
+      text: message,
+      accountId: account.accountId,
+    });
+
+    const fullText = response.text || response.content || "⚠️ 未收到回复";
+
+    // Simulate streaming by breaking response into tokens
+    const tokens = fullText.split(/(\s+|[，。！？；：""''（）【】])/).filter((t: string) => t.length > 0);
+    for (const token of tokens) {
+      onToken(token);
+      // Small delay to simulate real streaming
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    return fullText;
+  }
+
   ctx.log?.error?.(`[${account.accountId}] sendToGateway not available in context`);
   return "⚠️ AI 服务暂时不可用";
 }

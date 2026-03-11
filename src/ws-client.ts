@@ -199,7 +199,7 @@ export class PinsonBotWSClient extends EventEmitter {
   }
 
   /**
-   * Send stream token (for typing effect)
+   * Send stream token (for real-time streaming from OpenClaw)
    */
   sendStreamToken(token: string, sessionId: string): boolean {
     return this.sendMessage({
@@ -210,34 +210,6 @@ export class PinsonBotWSClient extends EventEmitter {
       },
       timestamp: new Date().toISOString(),
     });
-  }
-
-  /**
-   * Send assistant response with streaming effect (typing)
-   */
-  async sendStreamingResponse(
-    content: string,
-    sessionId: string,
-    conversationId?: number,
-    options?: { charDelay?: number; chunkSize?: number }
-  ): Promise<void> {
-    const { charDelay = 30, chunkSize = 2 } = options || {};
-
-    // Send typing start
-    this.sendTypingIndicator(sessionId, true);
-
-    // Stream tokens
-    for (let i = 0; i < content.length; i += chunkSize) {
-      const chunk = content.slice(i, i + chunkSize);
-      this.sendStreamToken(chunk, sessionId);
-      await new Promise((resolve) => setTimeout(resolve, charDelay));
-    }
-
-    // Send typing end
-    this.sendTypingIndicator(sessionId, false);
-
-    // Send final complete message
-    this.sendAssistantResponse(content, sessionId, conversationId);
   }
 
   /**
