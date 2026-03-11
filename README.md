@@ -42,11 +42,61 @@ ws://localhost:8000/pinsonbots/internal/plugin?token={internalToken}&lobster_id=
 
 ## 安装
 
+### 方式一：作为 OpenClaw 插件安装（推荐）
+
+```bash
+# 1. 克隆到 OpenClaw skills 目录
+git clone https://github.com/pinsonchen/pinsonbot-connector.git ~/.openclaw/skills/pinsonbot-connector
+cd ~/.openclaw/skills/pinsonbot-connector
+
+# 2. 安装依赖并构建
+npm install
+npm run build
+
+# 3. 部署到 extensions 目录
+cp -r ~/.openclaw/skills/pinsonbot-connector ~/.openclaw/extensions/pinsonbot
+
+# 4. 配置 OpenClaw（见下方配置部分）
+
+# 5. 重启 OpenClaw Gateway
+systemctl --user restart openclaw-gateway
+
+# 6. 验证安装
+openclaw status
+# 应该看到：PinsonBot │ ON │ OK │ configured
+```
+
+### 方式二：独立运行
+
 ```bash
 npm install
+npm run build
+npm start
 ```
 
 ## 配置
+
+### OpenClaw 配置（推荐）
+
+编辑 `~/.openclaw/openclaw.json`：
+
+```json
+{
+  "channels": {
+    "pinsonbot": {
+      "enabled": true,
+      "endpoint": "wss://tools.pinsonbot.com/pinsonbots/internal/plugin",
+      "accounts": {
+        "default": {
+          "lobsterId": "YOUR_LOBSTER_ID",
+          "internalToken": "YOUR_INTERNAL_TOKEN",
+          "name": "Your Lobster Name"
+        }
+      }
+    }
+  }
+}
+```
 
 ### 方式 1: 环境变量（推荐）
 
@@ -217,6 +267,51 @@ curl -X DELETE http://localhost:8000/pinsonbots/api/lobsters/aB3xK9mN2p \
 
 ## 故障排查
 
+### WebSocket 连接失败
+
+**症状**: `WebSocket error: Unexpected server response: 403`
+
+**原因**: `internalToken` 无效或已过期
+
+**解决方案**:
+1. 在 PinsonBots 平台重新生成 token
+2. 更新 `~/.openclaw/openclaw.json` 中的 `internalToken`
+3. 重启 Gateway: `systemctl --user restart openclaw-gateway`
+
+### AI 不响应
+
+**症状**: 用户消息被接收，但没有 AI 回复
+
+**原因**: `MsgContext` 缺少必要字段
+
+**解决方案**:
+确保代码中 `dispatchReplyWithBufferedBlockDispatcher` 包含：
+```typescript
+{
+  ctx: {
+    Body: message,
+    BodyForAgent: message,
+    SessionKey: `pinsonbot:${sessionId}`,
+    AccountId: account.accountId,
+    ChatType: "direct",
+    From: sessionId,
+  }
+}
+```
+
+### 消息内容为空
+
+**症状**: 日志显示 `User message: ` 但内容为空
+
+**原因**: PinsonBots 消息是嵌套结构
+
+**解决方案**:
+消息格式为 `message.data.data.content`，而非 `message.data.content`：
+```typescript
+const innerData = message.data?.data || message.data;
+const content = innerData?.content || "";
+```
+
 ### 连接失败
 
 **症状**: `WebSocket error: connect ECONNREFUSED`
@@ -227,6 +322,30 @@ curl -X DELETE http://localhost:8000/pinsonbots/api/lobsters/aB3xK9mN2p \
 3. 验证防火墙设置
 
 ### 认证失败
+
+**症状**: `Disconnected: code=4001 - Invalid lobster ID or internal token`
+
+**解决方案**:
+1. 检查 `lobsterId` 是否正确
+2. 验证 `internalToken` 是否正确（区分大小写）
+3. 确认 token 是该龙虾的（不能跨龙虾使用）
+
+### 验证安装
+
+```bash
+# 检查插件状态
+openclaw status
+
+# 查看实时日志
+tail -f /tmp/openclaw/openclaw-*.log | grep -i pinsonbot
+
+# 测试消息流程
+# 在 PinsonBots webchat 发送消息，检查日志是否显示：
+# - [PinsonBotWS] DEBUG received message
+# - [PinsonBotWS] Emitting user_message
+# - deliver callback called
+# - AI response
+```
 
 **症状**: `Disconnected: code=4001 - Invalid lobster ID or internal token`
 
@@ -329,5 +448,16 @@ MIT License
 
 ---
 
-**版本**: 2.0.0  
+**版本**: 2.1.0
 **维护者**: PinsonBots Team
+
+## 更新日志
+
+### v2.1.0 (2026-03-11)
+
+- 🐛 修复嵌套消息结构解析问题 (#2)
+- ✨ 使用 channelRuntime.reply API 调用 AI (#3)
+- 🐛 修复 MsgContext 必要字段缺失问题 (#4)
+- 📚 完善 openclaw.plugin.json 配置 (#5)
+- ✨ 添加调试日志便于问题排查 (#6)
+- 📚 完善 README 安装指南 (#7)
