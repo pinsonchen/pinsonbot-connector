@@ -187,6 +187,7 @@ export class PinsonBotWSClient extends EventEmitter {
       content,
       session_id: sessionId,
       role: "assistant",
+      lobster_id: this.lobsterId,
     };
     if (conversationId !== undefined) {
       data.conversation_id = conversationId;
@@ -207,6 +208,7 @@ export class PinsonBotWSClient extends EventEmitter {
       data: {
         token,
         session_id: sessionId,
+        lobster_id: this.lobsterId,
       },
       timestamp: new Date().toISOString(),
     });
@@ -220,6 +222,7 @@ export class PinsonBotWSClient extends EventEmitter {
       type: isTyping ? "typing_start" : "typing_end",
       data: {
         session_id: sessionId,
+        lobster_id: this.lobsterId,
       },
       timestamp: new Date().toISOString(),
     });
