@@ -362,12 +362,12 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
 // ============ Inbound Message Handler ============
 
 async function handleInboundMessage(
-  message: { content: string; sessionId: string },
+  message: { content: string; sessionId: string; conversationId?: number },
   client: PinsonBotWSClient,
   ctx: GatewayStartContext,
   account: ResolvedAccount
 ): Promise<void> {
-  const { content, sessionId } = message;
+  const { content, sessionId, conversationId } = message;
 
   const stats = getInboundCounters(account.accountId);
   stats.received += 1;
@@ -409,8 +409,8 @@ async function handleInboundMessage(
     // End typing
     client.sendTypingIndicator(sessionId, false);
 
-    // Send AI response
-    client.sendAssistantResponse(response, sessionId);
+    // Send AI response (with conversation_id for persistence)
+    client.sendAssistantResponse(response, sessionId, conversationId);
 
     ctx.log?.info?.(
       `[${account.accountId}] AI response: ${response.substring(0, 100)}${

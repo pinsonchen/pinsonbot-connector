@@ -182,14 +182,18 @@ export class PinsonBotWSClient extends EventEmitter {
   /**
    * Send assistant response
    */
-  sendAssistantResponse(content: string, sessionId: string): boolean {
+  sendAssistantResponse(content: string, sessionId: string, conversationId?: number): boolean {
+    const data: any = {
+      content,
+      session_id: sessionId,
+      role: "assistant",
+    };
+    if (conversationId !== undefined) {
+      data.conversation_id = conversationId;
+    }
     return this.sendMessage({
       type: "bot_response",
-      data: {
-        content,
-        session_id: sessionId,
-        role: "assistant",
-      },
+      data,
       timestamp: new Date().toISOString(),
     });
   }
@@ -270,6 +274,7 @@ export class PinsonBotWSClient extends EventEmitter {
         this.emit("user_message", {
           content: message.data.content,
           sessionId: message.data.session_id,
+          conversationId: message.data.conversation_id,
           timestamp: message.timestamp,
         });
         break;

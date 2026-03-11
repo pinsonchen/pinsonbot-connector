@@ -101,6 +101,7 @@ export interface PinsonBotInboundMessage {
   data: {
     content?: string;
     session_id: string;
+    conversation_id?: number;
     role?: string;
     messages?: any[];
   };
