@@ -199,6 +199,48 @@ export class PinsonBotWSClient extends EventEmitter {
   }
 
   /**
+   * Send stream token (for typing effect)
+   */
+  sendStreamToken(token: string, sessionId: string): boolean {
+    return this.sendMessage({
+      type: "stream_token",
+      data: {
+        token,
+        session_id: sessionId,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Send assistant response with streaming effect (typing)
+   */
+  async sendStreamingResponse(
+    content: string,
+    sessionId: string,
+    conversationId?: number,
+    options?: { charDelay?: number; chunkSize?: number }
+  ): Promise<void> {
+    const { charDelay = 30, chunkSize = 2 } = options || {};
+
+    // Send typing start
+    this.sendTypingIndicator(sessionId, true);
+
+    // Stream tokens
+    for (let i = 0; i < content.length; i += chunkSize) {
+      const chunk = content.slice(i, i + chunkSize);
+      this.sendStreamToken(chunk, sessionId);
+      await new Promise((resolve) => setTimeout(resolve, charDelay));
+    }
+
+    // Send typing end
+    this.sendTypingIndicator(sessionId, false);
+
+    // Send final complete message
+    this.sendAssistantResponse(content, sessionId, conversationId);
+  }
+
+  /**
    * Send typing indicator
    */
   sendTypingIndicator(sessionId: string, isTyping: boolean): boolean {

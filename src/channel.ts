@@ -406,14 +406,14 @@ async function handleInboundMessage(
     // Dispatch to Gateway AI via the SDK runtime
     const response = await dispatchToGateway(ctx, content, sessionId, account);
 
-    // End typing
-    client.sendTypingIndicator(sessionId, false);
-
-    // Send AI response (with conversation_id for persistence)
-    client.sendAssistantResponse(response, sessionId, conversationId);
+    // Send AI response with streaming effect (typing)
+    await client.sendStreamingResponse(response, sessionId, conversationId, {
+      charDelay: 30,  // 30ms per chunk
+      chunkSize: 2,   // 2 characters per chunk
+    });
 
     ctx.log?.info?.(
-      `[${account.accountId}] AI response: ${response.substring(0, 100)}${
+      `[${account.accountId}] AI response (streaming): ${response.substring(0, 100)}${
         response.length > 100 ? "..." : ""
       }`
     );
