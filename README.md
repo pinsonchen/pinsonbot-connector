@@ -18,10 +18,10 @@ OpenClaw 插件，用于连接 PinsonBots Platform
 **重要**: 每个龙虾拥有独立的 `internal_token`，实现多租户隔离。
 
 ```
-Lobster A (id: "aB3xK9mN2p")
+Lobster A (id: "1")
   └── internal_token: "token_for_lobster_a_only"
-  
-Lobster B (id: "xY7pL2qR5n")
+
+Lobster B (id: "2")
   └── internal_token: "token_for_lobster_b_only"
 ```
 
@@ -59,8 +59,8 @@ PINSONBOT_ENDPOINT=ws://localhost:8000/pinsonbots/internal/plugin
 
 # 账号配置（格式：lobsterId:internalToken）
 # ⚠️ 每个龙虾使用其独立的 internal_token
-PINSONBOT_ACCOUNT_CUSTOMER_SERVICE=aB3xK9mN2p:token_for_lobster_aB3xK9mN2p_only
-PINSONBOT_ACCOUNT_SALES=xY7pL2qR5n:token_for_lobster_xY7pL2qR5n_only
+PINSONBOT_ACCOUNT_CUSTOMER_SERVICE=1:token_for_lobster_1_only
+PINSONBOT_ACCOUNT_SALES=2:token_for_lobster_2_only
 
 # 日志配置
 LOG_LEVEL=info
@@ -78,13 +78,13 @@ LOG_LEVEL=info
       "endpoint": "ws://localhost:8000/pinsonbots/internal/plugin",
       "accounts": {
         "customer-service": {
-          "lobsterId": "aB3xK9mN2p",
-          "internalToken": "token_for_lobster_aB3xK9mN2p_only",
+          "lobsterId": "1",
+          "internalToken": "token_for_lobster_1_only",
           "name": "Customer Service Bot"
         },
         "sales": {
-          "lobsterId": "xY7pL2qR5n",
-          "internalToken": "token_for_lobster_xY7pL2qR5n_only",
+          "lobsterId": "2",
+          "internalToken": "token_for_lobster_2_only",
           "name": "Sales Bot"
         }
       },
