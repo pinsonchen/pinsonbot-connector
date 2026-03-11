@@ -53,10 +53,6 @@ npm install
 创建 `.env` 文件：
 
 ```bash
-# OpenClaw 配置
-OPENCLAW_ENDPOINT=http://localhost:8080
-OPENCLAW_API_KEY=your-api-key
-
 # PinsonBots Platform 配置
 PINSONBOT_ENABLED=true
 PINSONBOT_ENDPOINT=ws://localhost:8000/pinsonbots/internal/plugin
@@ -76,10 +72,6 @@ LOG_LEVEL=info
 
 ```json
 {
-  "openclaw": {
-    "endpoint": "http://localhost:8080",
-    "apiKey": "your-api-key"
-  },
   "channels": {
     "pinsonbot": {
       "enabled": true,
@@ -298,6 +290,33 @@ npm test
 ```bash
 npm run lint
 ```
+
+## 架构说明
+
+### OpenClaw Channel Plugin
+
+PinsonBot Connector 是一个标准的 OpenClaw Channel Plugin，运行在 OpenClaw Gateway 内部：
+
+```
+┌─────────────────────────────────────────┐
+│         OpenClaw Gateway                │
+│  ┌─────────────────────────────────┐    │
+│  │     PinsonBot Channel Plugin    │    │
+│  │  ┌───────────────────────────┐  │    │
+│  │  │   WebSocket Client        │  │    │
+│  │  │   (连接 PinsonBots)       │  │    │
+│  │  └───────────────────────────┘  │    │
+│  │              │                  │    │
+│  │              ▼ SDK              │    │
+│  │  ┌───────────────────────────┐  │    │
+│  │  │   OpenClaw AI Core        │  │    │
+│  │  │   (ctx.sendToGateway)     │  │    │
+│  │  └───────────────────────────┘  │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+```
+
+AI 调用通过 OpenClaw Plugin SDK 的 `ctx.sendToGateway()` 完成，无需额外配置。
 
 ## 相关项目
 

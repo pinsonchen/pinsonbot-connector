@@ -445,7 +445,7 @@ async function handleInboundMessage(
 /**
  * Dispatch a user message to OpenClaw Gateway AI.
  *
- * Uses the runtime SDK chat dispatch.
+ * Uses the OpenClaw Plugin SDK runtime chat dispatch.
  */
 async function dispatchToGateway(
   ctx: GatewayStartContext,
@@ -453,40 +453,18 @@ async function dispatchToGateway(
   sessionId: string,
   account: ResolvedAccount
 ): Promise<string> {
-  // Use SDK runtime chat dispatch
-  if (typeof (ctx as any).sendToGateway === "function") {
-    const response = await (ctx as any).sendToGateway({
+  // Use SDK runtime chat dispatch via the context
+  const sendToGateway = (ctx as any).sendToGateway;
+  if (typeof sendToGateway === "function") {
+    const response = await sendToGateway({
       peerId: sessionId,
       text: message,
       accountId: account.accountId,
     });
-    return (
-      response.text || response.content || "⚠️ 未收到回复"
-    );
+    return response.text || response.content || "⚠️ 未收到回复";
   }
 
-  // Fallback: direct HTTP call to Gateway
-  const axios = await import("axios");
-  const gatewayUrl = "http://127.0.0.1:18789/v1/chat/completions";
-
-  ctx.log?.debug?.(
-    `[${account.accountId}] Calling Gateway AI: ${gatewayUrl}`
-  );
-
-  const response = await axios.default.post(
-    gatewayUrl,
-    {
-      messages: [{ role: "user", content: message }],
-      session_key: sessionId,
-      stream: false,
-    },
-    {
-      headers: { "Content-Type": "application/json" },
-      timeout: 60000,
-    }
-  );
-
-  return (
-    response.data.choices?.[0]?.message?.content || "⚠️ 未收到回复"
-  );
+  // Fallback if SDK method not available
+  ctx.log?.error?.(`[${account.accountId}] sendToGateway not available in context`);
+  return "⚠️ AI 服务暂时不可用";
 }
