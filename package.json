@@ -1,7 +1,7 @@
 {
   "name": "pinsonbot-connector",
-  "version": "2.1.0",
-  "description": "OpenClaw Channel Plugin for PinsonBots Platform integration",
+  "version": "2.2.0",
+  "description": "OpenClaw Channel Plugin for PinsonBots Platform integration with auto-update",
   "main": "index.ts",
   "type": "module",
   "scripts": {
@@ -10,7 +10,9 @@
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn src/index.ts",
     "lint": "eslint src/**/*.ts",
-    "test": "jest"
+    "test": "jest",
+    "check-update": "node dist/updater.js --check",
+    "auto-update": "node dist/updater.js --update"
   },
   "keywords": [
     "openclaw",
@@ -18,7 +20,8 @@
     "wechat",
     "chatbot",
     "plugin",
-    "channel"
+    "channel",
+    "auto-update"
   ],
   "author": "PinsonBots Team",
   "license": "MIT",
@@ -41,5 +44,8 @@
   },
   "peerDependencies": {
     "openclaw": ">=2026.2.13"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
   }
 }

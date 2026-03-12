@@ -23,6 +23,7 @@ import {
 import { PinsonBotConfigSchema } from "./config-schema.js";
 import { isMessageProcessed, markMessageProcessed } from "./dedup.js";
 import { PinsonBotWSClient } from "./ws-client.js";
+import { getUpdater } from "./updater.js";
 import type {
   PinsonBotChannelPlugin,
   PinsonBotInboundMessage,
@@ -242,6 +243,15 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
       const { account, cfg, abortSignal } = ctx;
       const config = account.config;
 
+      // Initialize auto-updater (once per plugin load)
+      const updater = getUpdater();
+      updater.setNotifyCallback((message) => {
+        ctx.log?.info?.(`[Updater] ${message}`);
+      });
+
+      // Start periodic update check (every 6 hours)
+      updater.startPeriodicCheck(6 * 60 * 60 * 1000);
+
       // Get account config
       const accountConfig = config.accounts?.[account.accountId];
       if (!accountConfig?.lobsterId || !accountConfig?.internalToken) {
@@ -303,9 +313,9 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         );
       });
 
-      client.on("user_message", async ({ content, sessionId }: { content: string; sessionId: string }) => {
+      client.on("user_message", async ({ content, sessionId, conversationId }: { content: string; sessionId: string; conversationId?: number }) => {
         await handleInboundMessage(
-          { content, sessionId },
+          { content, sessionId, conversationId },
           client,
           ctx,
           account

@@ -196,6 +196,9 @@ export class PinsonBotWSClient extends EventEmitter {
     };
     if (conversationId !== undefined) {
       data.conversation_id = conversationId;
+      console.log(`[PinsonBotWS] sendAssistantResponse: conversation_id=${conversationId}, content=${content.substring(0, 50)}`);
+    } else {
+      console.warn(`[PinsonBotWS] sendAssistantResponse: NO conversation_id! content=${content.substring(0, 50)}`);
     }
     return this.sendMessage({
       type: "bot_response",
