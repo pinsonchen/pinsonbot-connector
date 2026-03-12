@@ -11,6 +11,55 @@ OpenClaw 插件，用于连接 PinsonBots Platform
 - ✅ 健康检查
 - ✅ 优雅关闭
 
+## 快速开始
+
+### 1. 获取龙虾凭证
+
+访问 PinsonBots 管理平台：
+```
+https://tools.pinsonbot.com/bot/
+```
+
+创建龙虾后获得：
+- **Lobster ID**
+- **Internal Token** (用于 Plugin)
+
+### 2. 安装插件
+
+```bash
+git clone https://github.com/pinsonchen/pinsonbot-connector.git ~/.openclaw/skills/pinsonbot-connector
+cd ~/.openclaw/skills/pinsonbot-connector
+npm install && npm run build
+cp -r . ~/.openclaw/extensions/pinsonbot
+```
+
+### 3. 配置 OpenClaw
+
+编辑 `~/.openclaw/openclaw.json`:
+```json
+{
+  "channels": {
+    "pinsonbot": {
+      "enabled": true,
+      "endpoint": "wss://tools.pinsonbot.com/pinsonbots/internal/plugin",
+      "accounts": {
+        "default": {
+          "lobsterId": "YOUR_LOBSTER_ID",
+          "internalToken": "YOUR_INTERNAL_TOKEN"
+        }
+      }
+    }
+  }
+}
+```
+
+### 4. 重启并验证
+
+```bash
+systemctl --user restart openclaw-gateway
+openclaw status
+```
+
 ## 架构说明
 
 ### 认证机制
@@ -32,6 +81,12 @@ Lobster B (id: "2")
 
 ### WebSocket 端点
 
+**生产环境**:
+```
+wss://tools.pinsonbot.com/pinsonbots/internal/plugin?token={internalToken}&lobster_id={lobsterId}
+```
+
+**本地开发**:
 ```
 ws://localhost:8000/pinsonbots/internal/plugin?token={internalToken}&lobster_id={lobsterId}
 ```
@@ -40,45 +95,26 @@ ws://localhost:8000/pinsonbots/internal/plugin?token={internalToken}&lobster_id=
 1. 验证 `lobster_id` 是否存在
 2. 验证 `token` 是否与该龙虾的 `internal_token` 匹配
 
-## 安装
+## 详细安装步骤
 
-### 方式一：作为 OpenClaw 插件安装（推荐）
+### 1. 克隆并构建
 
 ```bash
-# 1. 克隆到 OpenClaw skills 目录
+# 克隆到 OpenClaw skills 目录
 git clone https://github.com/pinsonchen/pinsonbot-connector.git ~/.openclaw/skills/pinsonbot-connector
 cd ~/.openclaw/skills/pinsonbot-connector
 
-# 2. 安装依赖并构建
+# 安装依赖并构建
 npm install
 npm run build
 
-# 3. 部署到 extensions 目录
-cp -r ~/.openclaw/skills/pinsonbot-connector ~/.openclaw/extensions/pinsonbot
-
-# 4. 配置 OpenClaw（见下方配置部分）
-
-# 5. 重启 OpenClaw Gateway
-systemctl --user restart openclaw-gateway
-
-# 6. 验证安装
-openclaw status
-# 应该看到：PinsonBot │ ON │ OK │ configured
+# 部署到 extensions 目录
+cp -r . ~/.openclaw/extensions/pinsonbot
 ```
 
-### 方式二：独立运行
+### 2. 配置 OpenClaw
 
-```bash
-npm install
-npm run build
-npm start
-```
-
-## 配置
-
-### OpenClaw 配置（推荐）
-
-编辑 `~/.openclaw/openclaw.json`：
+编辑 `~/.openclaw/openclaw.json`，添加 PinsonBot Channel 配置：
 
 ```json
 {
@@ -98,58 +134,24 @@ npm start
 }
 ```
 
-### 方式 1: 环境变量（推荐）
+> 💡 提示：凭证从 https://tools.pinsonbot.com/bot/ 获取
 
-创建 `.env` 文件：
+### 3. 重启并验证
 
 ```bash
-# PinsonBots Platform 配置
-PINSONBOT_ENABLED=true
-PINSONBOT_ENDPOINT=ws://localhost:8000/pinsonbots/internal/plugin
+# 重启 OpenClaw Gateway
+systemctl --user restart openclaw-gateway
 
-# 账号配置（格式：lobsterId:internalToken）
-# ⚠️ 每个龙虾使用其独立的 internal_token
-PINSONBOT_ACCOUNT_CUSTOMER_SERVICE=1:token_for_lobster_1_only
-PINSONBOT_ACCOUNT_SALES=2:token_for_lobster_2_only
-
-# 日志配置
-LOG_LEVEL=info
+# 验证安装
+openclaw status
+# 应该看到：PinsonBot │ ON │ OK │ configured
 ```
 
-### 方式 2: 配置文件
+### 4. 测试连接
 
-创建 `config.json`:
-
-```json
-{
-  "channels": {
-    "pinsonbot": {
-      "enabled": true,
-      "endpoint": "ws://localhost:8000/pinsonbots/internal/plugin",
-      "accounts": {
-        "customer-service": {
-          "lobsterId": "1",
-          "internalToken": "token_for_lobster_1_only",
-          "name": "Customer Service Bot"
-        },
-        "sales": {
-          "lobsterId": "2",
-          "internalToken": "token_for_lobster_2_only",
-          "name": "Sales Bot"
-        }
-      },
-      "retry": {
-        "maxAttempts": 5,
-        "delayMs": 5000,
-        "backoffMultiplier": 2
-      }
-    }
-  },
-  "logging": {
-    "level": "info"
-  }
-}
-```
+1. 访问 WebChat: `https://tools.pinsonbot.com/bot/webchat/{lobsterId}`
+2. 发送消息
+3. 检查 AI 回复
 
 ## 运行
 
@@ -168,21 +170,55 @@ npm start
 
 ## 获取 Lobster 凭证
 
-### 步骤 1: 登录 PinsonBots Platform
+### 步骤 1: 访问 PinsonBots 管理平台
 
-```bash
-TOKEN=$(curl -X POST http://localhost:8000/pinsonbots/api/login \
-  -d "username=your@email.com&password=yourpassword" \
-  | jq -r .access_token)
+打开浏览器访问：
+
+```
+https://tools.pinsonbot.com/bot/
 ```
 
-### 步骤 2: 创建新龙虾
+### 步骤 2: 注册/登录
 
-```bash
-curl -X POST http://localhost:8000/pinsonbots/api/lobsters \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "My Bot", "description": "Customer service bot"}'
+1. 点击 **注册** 创建账号（或使用已有账号登录）
+2. 进入 Dashboard
+
+### 步骤 3: 创建龙虾
+
+1. 点击 **创建新龙虾**
+2. 填写名称和描述
+3. 点击 **创建**
+
+### 步骤 4: 保存凭证
+
+创建成功后，**立即保存**以下信息（平台只显示一次）：
+
+- **Lobster ID**: `1234567890` (示例)
+- **Internal Token**: `abc123xyz...` (用于 Plugin 认证) ⚠️ 重要
+- **AppKey**: `def456uvw...` (用于 WebChat 连接)
+
+> 💡 提示：建议将凭证保存到安全位置，并设置权限 `chmod 600 credentials.txt`
+
+### 步骤 5: 配置 Connector
+
+将 `internal_token` 和 `lobster_id` 添加到 `~/.openclaw/openclaw.json`：
+
+```json
+{
+  "channels": {
+    "pinsonbot": {
+      "enabled": true,
+      "endpoint": "wss://tools.pinsonbot.com/pinsonbots/internal/plugin",
+      "accounts": {
+        "default": {
+          "lobsterId": "YOUR_LOBSTER_ID",
+          "internalToken": "YOUR_INTERNAL_TOKEN",
+          "name": "Your Lobster Name"
+        }
+      }
+    }
+  }
+}
 ```
 
 响应示例：
@@ -282,42 +318,17 @@ curl -X DELETE http://localhost:8000/pinsonbots/api/lobsters/aB3xK9mN2p \
 
 **症状**: 用户消息被接收，但没有 AI 回复
 
-**原因**: `MsgContext` 缺少必要字段
-
 **解决方案**:
-确保代码中 `dispatchReplyWithBufferedBlockDispatcher` 包含：
-```typescript
-{
-  ctx: {
-    Body: message,
-    BodyForAgent: message,
-    SessionKey: `pinsonbot:${sessionId}`,
-    AccountId: account.accountId,
-    ChatType: "direct",
-    From: sessionId,
-  }
-}
-```
-
-### 消息内容为空
-
-**症状**: 日志显示 `User message: ` 但内容为空
-
-**原因**: PinsonBots 消息是嵌套结构
-
-**解决方案**:
-消息格式为 `message.data.data.content`，而非 `message.data.content`：
-```typescript
-const innerData = message.data?.data || message.data;
-const content = innerData?.content || "";
-```
+1. 检查 Plugin 连接状态：`openclaw status`
+2. 查看日志：`tail -f /tmp/openclaw/openclaw-*.log | grep -i pinsonbot`
+3. 在 PinsonBots 平台检查龙虾状态
 
 ### 连接失败
 
 **症状**: `WebSocket error: connect ECONNREFUSED`
 
 **解决方案**:
-1. 确认 PinsonBots Platform 正在运行
+1. 确认 PinsonBots Platform 可访问：`curl https://tools.pinsonbot.com/bot/`
 2. 检查 endpoint URL 是否正确
 3. 验证防火墙设置
 
@@ -326,42 +337,30 @@ const content = innerData?.content || "";
 **症状**: `Disconnected: code=4001 - Invalid lobster ID or internal token`
 
 **解决方案**:
-1. 检查 `lobsterId` 是否正确
+1. 在 PinsonBots 平台确认龙虾 ID 正确
 2. 验证 `internalToken` 是否正确（区分大小写）
 3. 确认 token 是该龙虾的（不能跨龙虾使用）
+4. 必要时重新创建龙虾获取新 token
 
 ### 验证安装
 
 ```bash
 # 检查插件状态
 openclaw status
+# 应该看到：PinsonBot │ ON │ OK │ configured
 
 # 查看实时日志
 tail -f /tmp/openclaw/openclaw-*.log | grep -i pinsonbot
 
 # 测试消息流程
-# 在 PinsonBots webchat 发送消息，检查日志是否显示：
-# - [PinsonBotWS] DEBUG received message
-# - [PinsonBotWS] Emitting user_message
-# - deliver callback called
-# - AI response
+# 1. 访问 https://tools.pinsonbot.com/bot/webchat/{lobsterId}
+# 2. 发送消息
+# 3. 检查日志是否显示：
+#    - [PinsonBotWS] DEBUG received message
+#    - [PinsonBotWS] Emitting user_message
+#    - deliver callback called
+#    - AI response
 ```
-
-**症状**: `Disconnected: code=4001 - Invalid lobster ID or internal token`
-
-**解决方案**:
-1. 检查 `lobsterId` 是否为 10 位字符串
-2. 验证 `internalToken` 是否正确（区分大小写）
-3. 确认 token 是该龙虾的（不能跨龙虾使用）
-
-### 多账号问题
-
-**症状**: 某个账号无法连接
-
-**解决方案**:
-1. 检查该账号的 `internal_token` 是否正确
-2. 验证龙虾状态：`GET /pinsonbots/api/lobsters/{id}`
-3. 查看平台日志确认认证细节
 
 ## 监控
 
