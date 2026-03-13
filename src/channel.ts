@@ -345,8 +345,33 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         });
       }
 
-      // Connect
+      // Connect and wait for initial connection (with timeout)
       client.connect();
+
+      // Wait for connection to establish (up to 10 seconds)
+      const connectionTimeout = 10000;
+      const connectionPromise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Connection timeout"));
+        }, connectionTimeout);
+
+        client.once("connected", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        client.once("error", (err) => {
+          clearTimeout(timeout);
+          reject(err.error);
+        });
+      });
+
+      try {
+        await connectionPromise;
+      } catch (error) {
+        ctx.log?.error?.(`[${account.accountId}] Failed to connect: ${error}`);
+        throw error;
+      }
 
       ctx.log?.info?.(`[${account.accountId}] PinsonBot plugin initialized`);
 
