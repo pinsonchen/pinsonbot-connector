@@ -1,12 +1,16 @@
 /**
- * PinsonBot Connector Auto-Updater
+ * PinsonBot Connector Auto-Updater v2
  *
  * Features:
- * - Check for updates from GitHub
+ * - Check for updates from PinsonBots Platform (primary) or GitHub (fallback)
  * - Download and install updates automatically
  * - Build TypeScript after update
  * - Notify for restart
- * - Rollback support (future)
+ * - Rollback support
+ *
+ * Update Source Priority:
+ * 1. PinsonBots Platform (国内直连，无需代理)
+ * 2. GitHub (需要代理或海外访问)
  */
 
 import { exec } from 'child_process';
@@ -15,28 +19,32 @@ import { createWriteStream, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { pipeline } from 'stream';
 import { mkdir, rm, rename } from 'fs/promises';
-import * as https from 'https';
 
 const execAsync = promisify(exec);
 const pipelineAsync = promisify(pipeline);
 
-interface GitHubRelease {
-  tag_name: string;
+interface ReleaseInfo {
+  version: string;
   name: string;
   published_at: string;
   body: string;
-  html_url: string;
+  download_url: string;
+  html_url?: string;
+  size?: number;
+  checksum?: string;
 }
 
 interface UpdateInfo {
   currentVersion: string;
   latestVersion: string;
   hasUpdate: boolean;
-  releaseInfo?: GitHubRelease;
+  releaseInfo?: ReleaseInfo;
+  source?: 'pinsonbots' | 'github';
 }
 
 interface UpdateOptions {
   githubRepo?: string;
+  pinsonbotEndpoint?: string;
   checkIntervalMs?: number;
   autoInstall?: boolean;
   notifyOnly?: boolean;
@@ -44,6 +52,8 @@ interface UpdateOptions {
 
 export class PluginUpdater {
   private readonly githubRepo: string;
+  private readonly pinsonbotEndpoint: string;
+  private readonly pluginName: string;
   private readonly projectRoot: string;
   private readonly versionFilePath: string;
   private checkInterval?: NodeJS.Timeout;
@@ -56,28 +66,23 @@ export class PluginUpdater {
     options: UpdateOptions = {}
   ) {
     this.githubRepo = options.githubRepo || 'pinsonchen/pinsonbot-connector';
+    this.pinsonbotEndpoint = options.pinsonbotEndpoint || 
+      process.env.PINSONBOT_UPDATE_ENDPOINT || 
+      'https://tools.pinsonbot.com/pinsonbots';
+    this.pluginName = 'pinsonbot-connector';
     this.projectRoot = projectRoot;
     this.versionFilePath = join(projectRoot, '.last-checked-version');
   }
 
-  /**
-   * Set notification callback
-   */
   setNotifyCallback(callback: (message: string) => void): void {
     this.notifyCallback = callback;
   }
 
-  /**
-   * Set auto-install mode
-   */
   setAutoInstall(enabled: boolean): void {
     this.autoInstallEnabled = enabled;
     this.notify(`Auto-install ${enabled ? 'enabled' : 'disabled'}`);
   }
 
-  /**
-   * Notify message via callback or console
-   */
   private notify(message: string): void {
     console.log(`[Updater] ${message}`);
     if (this.notifyCallback) {
@@ -85,9 +90,6 @@ export class PluginUpdater {
     }
   }
 
-  /**
-   * Get current version from package.json
-   */
   getCurrentVersion(): string {
     try {
       const packagePath = join(this.projectRoot, 'package.json');
@@ -100,349 +102,304 @@ export class PluginUpdater {
   }
 
   /**
-   * Fetch latest release info from GitHub (using curl for proxy support)
+   * Fetch from PinsonBots Platform (国内直连)
    */
-  async fetchLatestRelease(): Promise<GitHubRelease | null> {
+  private async fetchFromPinsonBots(): Promise<ReleaseInfo | null> {
+    try {
+      const url = `${this.pinsonbotEndpoint}/plugins/${this.pluginName}/releases/latest`;
+      const { stdout } = await execAsync(`curl -s --connect-timeout 5 "${url}"`);
+      
+      if (!stdout || stdout.includes('404') || stdout.includes('error')) {
+        return null;
+      }
+      
+      const data = JSON.parse(stdout);
+      return {
+        version: data.version,
+        name: data.name,
+        published_at: data.published_at,
+        body: data.body || '',
+        download_url: `${this.pinsonbotEndpoint}${data.download_url}`,
+        size: data.size,
+        checksum: data.checksum
+      };
+    } catch (error) {
+      console.warn('[Updater] PinsonBots unavailable:', (error as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch from GitHub (需要代理)
+   */
+  private async fetchFromGitHub(): Promise<ReleaseInfo | null> {
     try {
       const proxyEnv = process.env.https_proxy || process.env.HTTPS_PROXY || '';
-      const curlCmd = proxyEnv 
+      const curlCmd = proxyEnv
         ? `curl -x "${proxyEnv}" -s https://api.github.com/repos/${this.githubRepo}/releases/latest`
         : `curl -s https://api.github.com/repos/${this.githubRepo}/releases/latest`;
       
       const { stdout } = await execAsync(curlCmd);
       
       if (!stdout || stdout.includes('rate limit')) {
-        console.warn('[Updater] GitHub API rate limited, using cached version');
         return this.getCachedVersion();
       }
       
-      try {
-        const release = JSON.parse(stdout);
-        if (release.tag_name) {
-          return release;
-        }
-        return this.getCachedVersion();
-      } catch (e) {
-        console.error('[Updater] Failed to parse GitHub response:', e);
+      const data = JSON.parse(stdout);
+      if (!data.tag_name) {
         return this.getCachedVersion();
       }
+      
+      const version = data.tag_name.replace(/^v/, '');
+      return {
+        version,
+        name: data.name,
+        published_at: data.published_at,
+        body: data.body || '',
+        download_url: `https://github.com/${this.githubRepo}/archive/refs/tags/v${version}.zip`,
+        html_url: data.html_url
+      };
     } catch (error) {
-      console.error('[Updater] Exception fetching latest release:', error);
+      console.error('[Updater] GitHub fetch failed:', (error as Error).message);
       return this.getCachedVersion();
     }
   }
 
   /**
-   * Get cached version from file
+   * Fetch latest release (PinsonBots first, GitHub fallback)
    */
-  private getCachedVersion(): GitHubRelease | null {
+  async fetchLatestRelease(): Promise<{ release: ReleaseInfo | null; source: 'pinsonbots' | 'github' | undefined }> {
+    // 1. Try PinsonBots (国内直连)
+    const pinsonbots = await this.fetchFromPinsonBots();
+    if (pinsonbots) {
+      return { release: pinsonbots, source: 'pinsonbots' };
+    }
+    
+    // 2. Fallback to GitHub
+    this.notify('📍 PinsonBots unavailable, using GitHub');
+    const github = await this.fetchFromGitHub();
+    return { release: github, source: github ? 'github' : undefined };
+  }
+
+  private getCachedVersion(): ReleaseInfo | null {
     try {
       if (existsSync(this.versionFilePath)) {
-        const data = readFileSync(this.versionFilePath, 'utf-8');
-        return JSON.parse(data);
+        const data = JSON.parse(readFileSync(this.versionFilePath, 'utf-8'));
+        return data;
       }
-    } catch (e) {
-      // Ignore cache errors
+    } catch (error) {
+      console.error('[Updater] Failed to read cached version:', error);
     }
     return null;
   }
 
-  /**
-   * Cache version to file
-   */
-  private cacheVersion(release: GitHubRelease): void {
+  private cacheVersion(release: ReleaseInfo): void {
     try {
       writeFileSync(this.versionFilePath, JSON.stringify(release, null, 2));
-    } catch (e) {
-      console.warn('[Updater] Failed to cache version:', e);
+    } catch (error) {
+      console.error('[Updater] Failed to cache version:', error);
     }
   }
 
-  /**
-   * Check for updates
-   */
   async checkForUpdate(): Promise<UpdateInfo> {
     const currentVersion = this.getCurrentVersion();
-    const latestRelease = await this.fetchLatestRelease();
-
-    if (!latestRelease) {
+    const { release, source } = await this.fetchLatestRelease();
+    
+    if (!release) {
       return {
         currentVersion,
-        latestVersion: currentVersion,
-        hasUpdate: false,
+        latestVersion: '0.0.0',
+        hasUpdate: false
       };
     }
-
-    // Cache the release info
-    this.cacheVersion(latestRelease);
-
-    const latestVersion = latestRelease.tag_name.replace(/^v/, '');
-    const hasUpdate = this.compareVersions(currentVersion, latestVersion) < 0;
-
+    
+    const latestVersion = release.version;
+    const hasUpdate = this.compareVersions(latestVersion, currentVersion) > 0;
+    
+    if (hasUpdate) {
+      this.cacheVersion(release);
+    }
+    
     return {
       currentVersion,
       latestVersion,
       hasUpdate,
-      releaseInfo: latestRelease,
+      releaseInfo: release,
+      source: source || undefined
     };
   }
 
-  /**
-   * Compare two version strings
-   * Returns: -1 (a < b), 0 (a == b), 1 (a > b)
-   */
-  private compareVersions(a: string, b: string): number {
-    const aParts = a.split('.').map(Number);
-    const bParts = b.split('.').map(Number);
-
-    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-      const aPart = aParts[i] || 0;
-      const bPart = bParts[i] || 0;
-
-      if (aPart < bPart) return -1;
-      if (aPart > bPart) return 1;
+  private compareVersions(v1: string, v2: string): number {
+    if (!v1 || !v2) return 0;
+    const parts1 = v1.split('.').map(Number);
+    const parts2 = v2.split('.').map(Number);
+    
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+      const p1 = parts1[i] || 0;
+      const p2 = parts2[i] || 0;
+      if (p1 > p2) return 1;
+      if (p1 < p2) return -1;
     }
-
     return 0;
   }
 
-  /**
-   * Download file from URL (using curl for proxy support)
-   */
-  private async downloadFile(url: string, destPath: string): Promise<void> {
-    const proxyEnv = process.env.https_proxy || process.env.HTTPS_PROXY || '';
-    const curlCmd = proxyEnv
-      ? `curl -x "${proxyEnv}" -L -s -o "${destPath}" "${url}"`
-      : `curl -L -s -o "${destPath}" "${url}"`;
-    
-    try {
-      await execAsync(curlCmd);
-      
-      // Verify file was downloaded
-      if (!existsSync(destPath)) {
-        throw new Error('Download failed: file not created');
-      }
-      
-      const { stdout } = await execAsync(`stat -c%s "${destPath}" 2>/dev/null || echo 0`);
-      const size = parseInt(stdout.trim());
-      if (size === 0) {
-        throw new Error('Download failed: empty file');
-      }
-    } catch (error) {
-      throw new Error(`Download failed: ${error}`);
-    }
-  }
-
-  /**
-   * Install update from GitHub release
-   */
-  async installUpdate(release: GitHubRelease): Promise<boolean> {
+  async installUpdate(release: ReleaseInfo): Promise<boolean> {
     if (this.isUpdating) {
       this.notify('Update already in progress');
       return false;
     }
-
+    
     this.isUpdating = true;
-
+    const version = release.version;
+    const backupDir = join(this.projectRoot, `.backup-${Date.now()}`);
+    const tempDir = join(this.projectRoot, `.update-${version}`);
+    
     try {
-      const version = release.tag_name.replace(/^v/, '');
-      const backupDir = join(this.projectRoot, `.backup-${Date.now()}`);
-      const tempDir = join(this.projectRoot, `.update-${version}`);
-
       this.notify(`Starting update to v${version}...`);
-
+      
       // Create backup
-      this.notify('Creating backup...');
       await this.createBackup(backupDir);
-
-      // Download source code
+      
+      // Download
       this.notify('Downloading update...');
-      const zipUrl = `https://github.com/${this.githubRepo}/archive/refs/tags/${release.tag_name}.zip`;
       const zipPath = join(this.projectRoot, `update-${version}.zip`);
-      await this.downloadFile(zipUrl, zipPath);
-
-      // Extract and replace files
+      await this.downloadFile(release.download_url, zipPath);
+      
+      // Extract
       this.notify('Extracting update...');
-      await this.extractAndUpdate(zipPath, tempDir);
-
+      await execAsync(`unzip -o "${zipPath}" -d "${tempDir}"`);
+      
+      // Copy files
+      this.notify('Installing update...');
+      const extractedDir = join(tempDir, `${this.pluginName}-${version}`);
+      if (existsSync(extractedDir)) {
+        await execAsync(`cp -r "${extractedDir}/"* "${this.projectRoot}/"`);
+      } else {
+        // Try alternative naming
+        const altDir = join(tempDir, `${this.pluginName}-v${version}`);
+        if (existsSync(altDir)) {
+          await execAsync(`cp -r "${altDir}/"* "${this.projectRoot}/"`);
+        }
+      }
+      
       // Install dependencies
       this.notify('Installing dependencies...');
       await this.installDependencies();
-
+      
       // Build TypeScript
       this.notify('Building TypeScript...');
       await this.buildTypeScript();
-
+      
       // Cleanup
-      this.notify('Cleaning up...');
       await this.cleanup(zipPath, tempDir);
-
+      
       this.notify(`✅ Update to v${version} completed successfully!`);
       this.notify('🔄 Please restart OpenClaw Gateway to apply the update.');
-
+      
       return true;
-    } catch (error) {
-      console.error('[Updater] Update failed:', error);
-      this.notify(`❌ Update failed: ${error}`);
-
-      // Attempt rollback
-      await this.rollback();
-
+    } catch (error: any) {
+      this.notify(`❌ Update failed: ${error.message}`);
+      this.notify('Rolling back to previous version...');
+      await this.rollback(backupDir);
       return false;
     } finally {
       this.isUpdating = false;
     }
   }
 
-  /**
-   * Create backup of current files
-   */
   private async createBackup(backupDir: string): Promise<void> {
-    // 创建备份目录
     await mkdir(backupDir, { recursive: true });
-
+    
     const srcDir = join(this.projectRoot, 'src');
     if (existsSync(srcDir)) {
       await mkdir(join(backupDir, 'src'), { recursive: true });
       await execAsync(`cp -r "${srcDir}/"* "${backupDir}/src/"`);
     }
-
+    
     const distDir = join(this.projectRoot, 'dist');
     if (existsSync(distDir)) {
       await mkdir(join(backupDir, 'dist'), { recursive: true });
       await execAsync(`cp -r "${distDir}/"* "${backupDir}/dist/"`);
     }
-
+    
     const packageJson = join(this.projectRoot, 'package.json');
     if (existsSync(packageJson)) {
       await execAsync(`cp "${packageJson}" "${backupDir}/package.json"`);
     }
-
+    
     this.notify(`Backup created at: ${backupDir}`);
   }
 
-  /**
-   * Extract downloaded archive and update files
-   */
-  private async extractAndUpdate(zipPath: string, tempDir: string): Promise<void> {
-    // Extract zip
-    await execAsync(`unzip -o "${zipPath}" -d "${tempDir}"`);
-
-    // Find extracted directory (usually has version suffix)
-    const extractedDirs = await execAsync(`ls -d ${tempDir}/*/ 2>/dev/null | head -1`);
-    const extractedDir = extractedDirs.stdout.trim();
-
-    if (!extractedDir) {
-      throw new Error('Failed to find extracted directory');
+  private async downloadFile(url: string, destPath: string): Promise<void> {
+    const proxyEnv = process.env.https_proxy || process.env.HTTPS_PROXY || '';
+    const curlCmd = proxyEnv
+      ? `curl -x "${proxyEnv}" -L -s -o "${destPath}" "${url}"`
+      : `curl -L -s -o "${destPath}" "${url}"`;
+    
+    await execAsync(curlCmd);
+    
+    if (!existsSync(destPath)) {
+      throw new Error('Download failed: file not created');
     }
-
-    // Copy src files
-    const extractedSrc = join(extractedDir, 'src');
-    if (existsSync(extractedSrc)) {
-      await execAsync(`cp -r "${extractedSrc}"/* "${this.projectRoot}/src/"`);
-    }
-
-    // Copy package.json if updated
-    const extractedPackage = join(extractedDir, 'package.json');
-    if (existsSync(extractedPackage)) {
-      await execAsync(`cp "${extractedPackage}" "${this.projectRoot}/package.json"`);
-    }
-
-    // Copy other config files
-    const configFiles = ['tsconfig.json', '.gitignore', 'README.md'];
-    for (const file of configFiles) {
-      const extractedFile = join(extractedDir, file);
-      if (existsSync(extractedFile)) {
-        await execAsync(`cp "${extractedFile}" "${this.projectRoot}/${file}"`);
-      }
+    
+    const { stdout } = await execAsync(`stat -c%s "${destPath}" 2>/dev/null || echo 0`);
+    const size = parseInt(stdout.trim());
+    if (size === 0) {
+      throw new Error('Download failed: empty file');
     }
   }
 
-  /**
-   * Install npm dependencies
-   */
   private async installDependencies(): Promise<void> {
-    await execAsync('npm install --production', {
-      cwd: this.projectRoot,
-    });
+    await execAsync('npm install --production', { cwd: this.projectRoot });
   }
 
-  /**
-   * Build TypeScript
-   */
   private async buildTypeScript(): Promise<void> {
-    await execAsync('npm run build', {
-      cwd: this.projectRoot,
-    });
+    await execAsync('npm run build', { cwd: this.projectRoot });
   }
 
-  /**
-   * Cleanup temporary files
-   */
   private async cleanup(zipPath: string, tempDir: string): Promise<void> {
-    try {
-      await rm(zipPath, { force: true });
-      await rm(tempDir, { recursive: true, force: true });
-    } catch (e) {
-      console.warn('[Updater] Cleanup warning:', e);
+    if (existsSync(zipPath)) {
+      await rm(zipPath);
+    }
+    if (existsSync(tempDir)) {
+      await rm(tempDir, { recursive: true });
     }
   }
 
-  /**
-   * Rollback to previous version
-   */
-  private async rollback(): Promise<void> {
+  private async rollback(backupDir: string): Promise<void> {
     try {
-      // Find most recent backup
-      const backups = await execAsync(`ls -dt ${this.projectRoot}/.backup-* 2>/dev/null | head -1`);
-      const backupDir = backups.stdout.trim();
-
-      if (backupDir) {
-        this.notify('Rolling back to previous version...');
-
-        // Restore src
-        const backupSrc = join(backupDir, 'src');
-        if (existsSync(backupSrc)) {
-          await execAsync(`rm -rf "${this.projectRoot}/src" && cp -r "${backupSrc}" "${this.projectRoot}/src"`);
-        }
-
-        // Restore dist
-        const backupDist = join(backupDir, 'dist');
-        if (existsSync(backupDist)) {
-          await execAsync(`rm -rf "${this.projectRoot}/dist" && cp -r "${backupDist}" "${this.projectRoot}/dist"`);
-        }
-
-        // Rebuild
-        await this.buildTypeScript();
-
-        this.notify('✅ Rollback completed');
+      const srcBackup = join(backupDir, 'src');
+      if (existsSync(srcBackup)) {
+        await execAsync(`cp -r "${srcBackup}/"* "${this.projectRoot}/src/"`);
       }
-    } catch (error) {
-      console.error('[Updater] Rollback failed:', error);
-      this.notify('❌ Rollback failed, manual intervention required');
+      
+      const distBackup = join(backupDir, 'dist');
+      if (existsSync(distBackup)) {
+        await execAsync(`cp -r "${distBackup}/"* "${this.projectRoot}/dist/"`);
+      }
+      
+      const packageBackup = join(backupDir, 'package.json');
+      if (existsSync(packageBackup)) {
+        await execAsync(`cp "${packageBackup}" "${this.projectRoot}/package.json"`);
+      }
+      
+      this.notify('✅ Rollback completed');
+    } catch (error: any) {
+      this.notify(`❌ Rollback failed: ${error.message}`);
     }
   }
 
-  /**
-   * Start periodic update check
-   */
   startPeriodicCheck(intervalMs: number = 6 * 60 * 60 * 1000): void {
-    // Default: check every 6 hours
     this.stopPeriodicCheck();
-
     this.notify(`Starting periodic update check (every ${intervalMs / 1000 / 60} minutes)`);
-
+    
     this.checkInterval = setInterval(async () => {
       await this.checkAndNotify();
     }, intervalMs);
-
-    // Initial check
+    
     this.checkAndNotify();
   }
 
-  /**
-   * Stop periodic update check
-   */
   stopPeriodicCheck(): void {
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
@@ -450,39 +407,34 @@ export class PluginUpdater {
     }
   }
 
-  /**
-   * Check for update and notify if available
-   */
   async checkAndNotify(): Promise<UpdateInfo> {
     try {
       const updateInfo = await this.checkForUpdate();
-
-      if (updateInfo.hasUpdate) {
+      
+      if (updateInfo.hasUpdate && updateInfo.releaseInfo) {
         this.notify(`🆕 Update available: v${updateInfo.currentVersion} → v${updateInfo.latestVersion}`);
-
-        if (updateInfo.releaseInfo) {
-          this.notify(`📝 Release: ${updateInfo.releaseInfo.name}`);
-          this.notify(`🔗 ${updateInfo.releaseInfo.html_url}`);
-
-          // Show first few lines of changelog
-          const changelog = updateInfo.releaseInfo.body.split('\n').slice(0, 5).join('\n');
-          if (changelog) {
-            this.notify(`📋 Changes:\n${changelog}`);
-          }
-
-          // Auto-install if enabled
-          if (this.autoInstallEnabled) {
-            this.notify('🔄 Auto-install enabled, starting update...');
-            const success = await this.installUpdate(updateInfo.releaseInfo);
-            if (success) {
-              this.notify('✅ Auto-update completed! Restart Gateway to apply.');
-            }
+        this.notify(`📝 Release: ${updateInfo.releaseInfo.name}`);
+        
+        if (updateInfo.source) {
+          this.notify(`📍 Source: ${updateInfo.source}`);
+        }
+        
+        const changelog = updateInfo.releaseInfo.body.split('\n').slice(0, 5).join('\n');
+        if (changelog) {
+          this.notify(`📋 Changes:\n${changelog}`);
+        }
+        
+        if (this.autoInstallEnabled) {
+          this.notify('🔄 Auto-install enabled, starting update...');
+          const success = await this.installUpdate(updateInfo.releaseInfo);
+          if (success) {
+            this.notify('✅ Auto-update completed! Restart Gateway to apply.');
           }
         }
       } else {
         this.notify('✅ Plugin is up to date');
       }
-
+      
       return updateInfo;
     } catch (error) {
       console.error('[Updater] Check failed:', error);
@@ -490,39 +442,28 @@ export class PluginUpdater {
     }
   }
 
-  /**
-   * Auto-update if new version available
-   */
   async autoUpdate(): Promise<boolean> {
     const updateInfo = await this.checkForUpdate();
-
+    
     if (updateInfo.hasUpdate && updateInfo.releaseInfo) {
-      this.notify(`Auto-updating to v${updateInfo.latestVersion}...`);
+      this.notify(`🆕 Auto-updating to v${updateInfo.latestVersion}...`);
       return await this.installUpdate(updateInfo.releaseInfo);
     }
-
+    
+    this.notify('✅ Plugin is up to date');
     return false;
   }
 }
 
-// Export singleton instance
+// Singleton instance
 let updaterInstance: PluginUpdater | null = null;
 
-export function getUpdater(projectRoot?: string): PluginUpdater {
+export function getUpdater(projectRoot?: string, options?: UpdateOptions): PluginUpdater {
   if (!updaterInstance) {
-    // import.meta.dirname points to dist/src/, so we go up TWO levels to project root
-    const root = projectRoot || join(import.meta.dirname, '..', '..');
-    updaterInstance = new PluginUpdater(root);
+    updaterInstance = new PluginUpdater(
+      projectRoot || process.cwd(),
+      options
+    );
   }
   return updaterInstance;
 }
-
-/**
- * Get the plugin root directory (where package.json lives)
- */
-export function getPluginRoot(): string {
-  // When running from dist/src/*.js, go up two levels to project root
-  return join(import.meta.dirname, '..', '..');
-}
-
-export default PluginUpdater;
