@@ -379,23 +379,12 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
       let abortListener: (() => void) | null = null;
       let isStopped = false;
 
-      // Listen for abort signal
-      if (abortSignal) {
-        if (abortSignal.aborted) {
-          ctx.log?.warn?.(
-            `[${account.accountId}] Abort signal already active, skipping connection`
-          );
-          throw new Error("Connection aborted before start");
-        }
-        abortListener = () => {
-          if (isStopped) return; // Prevent double-trigger
-          ctx.log?.info?.(
-            `[${account.accountId}] Abort signal received, stopping...`
-          );
-          client.disconnect();
-          activeClients.delete(account.accountId);
-        };
-        abortSignal.addEventListener("abort", abortListener);
+      // Check if already aborted
+      if (abortSignal?.aborted) {
+        ctx.log?.warn?.(
+          `[${account.accountId}] Abort signal already active, skipping connection`
+        );
+        throw new Error("Connection aborted before start");
       }
 
       // Connect and wait for initial connection (with timeout)
@@ -436,14 +425,15 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
 
       ctx.log?.info?.(`[${account.accountId}] PinsonBot plugin initialized`);
 
-      return {
-        stop: () => {
-          if (isStopped) return; // Prevent double-stop
+      // Return a Promise that stays pending until stopped via abortSignal
+      // Gateway expects startAccount to stay pending; it uses abortSignal to signal stop
+      return new Promise<GatewayStopResult>((resolve) => {
+        const cleanup = () => {
+          if (isStopped) return;
           isStopped = true;
           ctx.log?.info?.(
             `[${account.accountId}] Stopping PinsonBot plugin...`
           );
-          // Remove abort listener to prevent double-cleanup
           if (abortListener && abortSignal) {
             abortSignal.removeEventListener("abort", abortListener);
           }
@@ -455,8 +445,17 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
             lastStopAt: Date.now(),
           });
           ctx.log?.info?.(`[${account.accountId}] PinsonBot plugin stopped`);
-        },
-      };
+          resolve({
+            stop: cleanup // Return stop function for Gateway to call
+          });
+        };
+
+        // Set up abort listener to stop and resolve the promise
+        if (abortSignal) {
+          abortListener = cleanup;
+          abortSignal.addEventListener("abort", abortListener);
+        }
+      });
     },
   },
 };
