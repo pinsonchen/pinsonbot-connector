@@ -237,6 +237,26 @@ All updater actions are logged:
 4. Review logs for specific error
 5. Manual rollback from `.backup-<timestamp>/`
 
+### Proxy Configuration (中国大陆)
+
+如果服务器在中国大陆，需要设置代理才能访问 GitHub：
+
+```bash
+# 设置代理环境变量
+export https_proxy=http://YOUR_PROXY:PORT
+export HTTPS_PROXY=http://YOUR_PROXY:PORT
+
+# 示例：使用新加坡代理
+export https_proxy=http://43.106.121.49:8888
+
+# 测试代理
+curl -x http://43.106.121.49:8888 -s https://api.github.com/rate_limit
+```
+
+**代理白名单**:
+- 42.121.218.132 (杭州服务器)
+- 121.43.83.126 (新服务器)
+
 ### Rate Limited
 
 GitHub API has rate limits (60 requests/hour for unauthenticated):
@@ -281,6 +301,7 @@ new PluginUpdater(projectRoot: string, options?: UpdateOptions)
 | `checkAndNotify()` | Check and log update status |
 | `autoUpdate()` | Check and auto-install if available |
 | `setNotifyCallback(callback)` | Set notification callback |
+| `setAutoInstall(enabled)` | Enable/disable auto-install on check |
 
 ## License
 
