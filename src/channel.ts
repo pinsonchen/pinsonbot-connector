@@ -27,10 +27,39 @@ import { getUpdater } from "./updater.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
-// 获取插件目录路径（编译后 channel.js 在 dist/src/ 目录）
+// 获取插件目录路径（自动查找 package.json）
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const PLUGIN_DIR = join(__dirname, "../..");  // dist/src -> 插件根目录
+
+// 向上查找 package.json 所在的插件根目录
+function findPluginRoot(startDir: string): string {
+  const fs = require('fs');
+  const path = require('path');
+  
+  let currentDir = startDir;
+  // 最多向上查找 5 层
+  for (let i = 0; i < 5; i++) {
+    const pkgPath = path.join(currentDir, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        // 确认是 pinsonbot-connector 的 package.json
+        if (pkg.name === 'pinsonbot-connector') {
+          return currentDir;
+        }
+      } catch (e) {
+        // 忽略解析错误
+      }
+    }
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) break; // 已到达根目录
+    currentDir = parentDir;
+  }
+  // 找不到则返回默认值
+  return path.join(__dirname, '..');
+}
+
+const PLUGIN_DIR = findPluginRoot(__dirname);
 import type {
   PinsonBotChannelPlugin,
   PinsonBotInboundMessage,
