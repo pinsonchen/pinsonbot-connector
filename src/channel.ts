@@ -24,6 +24,13 @@ import { PinsonBotConfigSchema } from "./config-schema.js";
 import { isMessageProcessed, markMessageProcessed } from "./dedup.js";
 import { PinsonBotWSClient } from "./ws-client.js";
 import { getUpdater } from "./updater.js";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+// 获取插件目录路径
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const PLUGIN_DIR = join(__dirname, "..");
 import type {
   PinsonBotChannelPlugin,
   PinsonBotInboundMessage,
@@ -244,7 +251,7 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
       const config = account.config;
 
       // Initialize auto-updater (once per plugin load)
-      const updater = getUpdater();
+      const updater = getUpdater(PLUGIN_DIR);
       updater.setNotifyCallback((message) => {
         ctx.log?.info?.(`[Updater] ${message}`);
       });

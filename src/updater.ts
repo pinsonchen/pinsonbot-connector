@@ -32,6 +32,7 @@ interface ReleaseInfo {
   html_url?: string;
   size?: number;
   checksum?: string;
+  format?: 'tar.gz' | 'zip';
 }
 
 interface UpdateInfo {
@@ -119,9 +120,11 @@ export class PluginUpdater {
         name: data.name,
         published_at: data.published_at,
         body: data.body || '',
-        download_url: `${this.pinsonbotEndpoint}${data.download_url}`,
+        // download_url is relative, build full URL
+        download_url: `https://tools.pinsonbot.com${data.download_url}`,
         size: data.size,
-        checksum: data.checksum
+        checksum: data.checksum,
+        format: 'tar.gz' as const  // PinsonBots always uses tar.gz
       };
     } catch (error) {
       console.warn('[Updater] PinsonBots unavailable:', (error as Error).message);
@@ -157,7 +160,8 @@ export class PluginUpdater {
         published_at: data.published_at,
         body: data.body || '',
         download_url: `https://github.com/${this.githubRepo}/archive/refs/tags/v${version}.zip`,
-        html_url: data.html_url
+        html_url: data.html_url,
+        format: 'zip' as const  // GitHub uses zip
       };
     } catch (error) {
       console.error('[Updater] GitHub fetch failed:', (error as Error).message);
@@ -260,27 +264,42 @@ export class PluginUpdater {
       // Create backup
       await this.createBackup(backupDir);
       
-      // Download
+      // Download - determine format from release info
       this.notify('Downloading update...');
-      const zipPath = join(this.projectRoot, `update-${version}.zip`);
-      await this.downloadFile(release.download_url, zipPath);
+      const isTarGz = release.format === 'tar.gz' || release.download_url.endsWith('.tar.gz');
+      const archivePath = join(this.projectRoot, `update-${version}.${isTarGz ? 'tar.gz' : 'zip'}`);
+      await this.downloadFile(release.download_url, archivePath);
       
       // Extract
       this.notify('Extracting update...');
-      await execAsync(`unzip -o "${zipPath}" -d "${tempDir}"`);
+      await mkdir(tempDir, { recursive: true });
+      if (isTarGz) {
+        await execAsync(`tar -xzf "${archivePath}" -C "${tempDir}"`);
+      } else {
+        await execAsync(`unzip -o "${archivePath}" -d "${tempDir}"`);
+      }
       
       // Copy files
       this.notify('Installing update...');
-      const extractedDir = join(tempDir, `${this.pluginName}-${version}`);
-      if (existsSync(extractedDir)) {
-        await execAsync(`cp -r "${extractedDir}/"* "${this.projectRoot}/"`);
-      } else {
-        // Try alternative naming
-        const altDir = join(tempDir, `${this.pluginName}-v${version}`);
-        if (existsSync(altDir)) {
-          await execAsync(`cp -r "${altDir}/"* "${this.projectRoot}/"`);
+      let extractedDir = join(tempDir, `${this.pluginName}-${version}`);
+      if (!existsSync(extractedDir)) {
+        extractedDir = join(tempDir, `${this.pluginName}-v${version}`);
+      }
+      if (!existsSync(extractedDir)) {
+        extractedDir = join(tempDir, this.pluginName);
+      }
+      if (!existsSync(extractedDir)) {
+        // Check if tar.gz extracted directly to tempDir
+        const srcInTemp = join(tempDir, 'src');
+        const pkgInTemp = join(tempDir, 'package.json');
+        if (existsSync(srcInTemp) && existsSync(pkgInTemp)) {
+          extractedDir = tempDir;
         }
       }
+      if (!existsSync(extractedDir)) {
+        throw new Error('Could not find extracted plugin directory');
+      }
+      await execAsync(`cp -r "${extractedDir}/"* "${this.projectRoot}/"`);
       
       // Install dependencies
       this.notify('Installing dependencies...');
@@ -291,7 +310,7 @@ export class PluginUpdater {
       await this.buildTypeScript();
       
       // Cleanup
-      await this.cleanup(zipPath, tempDir);
+      await this.cleanup(archivePath, tempDir);
       
       this.notify(`✅ Update to v${version} completed successfully!`);
       this.notify('🔄 Please restart OpenClaw Gateway to apply the update.');
@@ -357,9 +376,9 @@ export class PluginUpdater {
     await execAsync('npm run build', { cwd: this.projectRoot });
   }
 
-  private async cleanup(zipPath: string, tempDir: string): Promise<void> {
-    if (existsSync(zipPath)) {
-      await rm(zipPath);
+  private async cleanup(archivePath: string, tempDir: string): Promise<void> {
+    if (existsSync(archivePath)) {
+      await rm(archivePath);
     }
     if (existsSync(tempDir)) {
       await rm(tempDir, { recursive: true });
@@ -459,7 +478,7 @@ export class PluginUpdater {
 let updaterInstance: PluginUpdater | null = null;
 
 export function getUpdater(projectRoot?: string, options?: UpdateOptions): PluginUpdater {
-  if (!updaterInstance) {
+  if (!updaterInstance || projectRoot) {
     updaterInstance = new PluginUpdater(
       projectRoot || process.cwd(),
       options
