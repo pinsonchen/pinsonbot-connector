@@ -328,6 +328,9 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         );
       });
 
+      // Track abort listener for cleanup
+      let abortListener: (() => void) | null = null;
+
       // Listen for abort signal
       if (abortSignal) {
         if (abortSignal.aborted) {
@@ -336,13 +339,14 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
           );
           throw new Error("Connection aborted before start");
         }
-        abortSignal.addEventListener("abort", () => {
+        abortListener = () => {
           ctx.log?.info?.(
             `[${account.accountId}] Abort signal received, stopping...`
           );
           client.disconnect();
           activeClients.delete(account.accountId);
-        });
+        };
+        abortSignal.addEventListener("abort", abortListener);
       }
 
       // Connect and wait for initial connection (with timeout)
@@ -380,6 +384,10 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
           ctx.log?.info?.(
             `[${account.accountId}] Stopping PinsonBot plugin...`
           );
+          // Remove abort listener to prevent double-cleanup
+          if (abortListener && abortSignal) {
+            abortSignal.removeEventListener("abort", abortListener);
+          }
           client.disconnect();
           activeClients.delete(account.accountId);
           ctx.setStatus?.({
