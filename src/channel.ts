@@ -27,10 +27,10 @@ import { getUpdater } from "./updater.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
-// 获取插件目录路径
+// 获取插件目录路径（编译后 channel.js 在 dist/src/ 目录）
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const PLUGIN_DIR = join(__dirname, "..");
+const PLUGIN_DIR = join(__dirname, "../..");  // dist/src -> 插件根目录
 import type {
   PinsonBotChannelPlugin,
   PinsonBotInboundMessage,
