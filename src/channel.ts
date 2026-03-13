@@ -385,6 +385,14 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         throw error;
       }
 
+      // Explicitly set running status before returning
+      ctx.setStatus?.({
+        ...ctx.getStatus?.(),
+        running: true,
+        lastStartAt: Date.now(),
+        lastError: null,
+      });
+
       ctx.log?.info?.(`[${account.accountId}] PinsonBot plugin initialized`);
 
       return {
