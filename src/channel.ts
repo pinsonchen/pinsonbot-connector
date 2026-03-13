@@ -338,6 +338,7 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
 
       // Track abort listener for cleanup
       let abortListener: (() => void) | null = null;
+      let isStopped = false;
 
       // Listen for abort signal
       if (abortSignal) {
@@ -348,6 +349,7 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
           throw new Error("Connection aborted before start");
         }
         abortListener = () => {
+          if (isStopped) return; // Prevent double-trigger
           ctx.log?.info?.(
             `[${account.accountId}] Abort signal received, stopping...`
           );
@@ -397,6 +399,8 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
 
       return {
         stop: () => {
+          if (isStopped) return; // Prevent double-stop
+          isStopped = true;
           ctx.log?.info?.(
             `[${account.accountId}] Stopping PinsonBot plugin...`
           );
