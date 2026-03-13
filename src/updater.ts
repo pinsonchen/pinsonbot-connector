@@ -508,10 +508,19 @@ let updaterInstance: PluginUpdater | null = null;
 
 export function getUpdater(projectRoot?: string): PluginUpdater {
   if (!updaterInstance) {
-    const root = projectRoot || join(process.cwd(), '..');
+    // import.meta.dirname points to dist/src/, so we go up TWO levels to project root
+    const root = projectRoot || join(import.meta.dirname, '..', '..');
     updaterInstance = new PluginUpdater(root);
   }
   return updaterInstance;
+}
+
+/**
+ * Get the plugin root directory (where package.json lives)
+ */
+export function getPluginRoot(): string {
+  // When running from dist/src/*.js, go up two levels to project root
+  return join(import.meta.dirname, '..', '..');
 }
 
 export default PluginUpdater;
