@@ -31,3 +31,7 @@ logs/
 # Testing
 coverage/
 .nyc_output/
+.backup-*
+.last-checked-version
+*.zip
+.update-*
