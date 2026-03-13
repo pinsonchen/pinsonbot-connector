@@ -49,6 +49,7 @@ export class PluginUpdater {
   private checkInterval?: NodeJS.Timeout;
   private isUpdating: boolean = false;
   private notifyCallback?: (message: string) => void;
+  private autoInstallEnabled: boolean = false;
 
   constructor(
     projectRoot: string,
@@ -64,6 +65,14 @@ export class PluginUpdater {
    */
   setNotifyCallback(callback: (message: string) => void): void {
     this.notifyCallback = callback;
+  }
+
+  /**
+   * Set auto-install mode
+   */
+  setAutoInstall(enabled: boolean): void {
+    this.autoInstallEnabled = enabled;
+    this.notify(`Auto-install ${enabled ? 'enabled' : 'disabled'}`);
   }
 
   /**
@@ -91,52 +100,32 @@ export class PluginUpdater {
   }
 
   /**
-   * Fetch latest release info from GitHub
+   * Fetch latest release info from GitHub (using curl for proxy support)
    */
   async fetchLatestRelease(): Promise<GitHubRelease | null> {
     try {
-      return new Promise((resolve, reject) => {
-        const options = {
-          hostname: 'api.github.com',
-          path: `/repos/${this.githubRepo}/releases/latest`,
-          method: 'GET',
-          headers: {
-            'User-Agent': 'PinsonBot-Connector-Updater',
-            'Accept': 'application/vnd.github.v3+json',
-          },
-        };
-
-        const req = https.request(options, (res) => {
-          let data = '';
-
-          res.on('data', (chunk) => {
-            data += chunk;
-          });
-
-          res.on('end', () => {
-            if (res.statusCode === 200) {
-              try {
-                resolve(JSON.parse(data));
-              } catch (e) {
-                reject(new Error('Failed to parse GitHub response'));
-              }
-            } else if (res.statusCode === 403) {
-              // Rate limited
-              console.warn('[Updater] GitHub API rate limited, using cached version');
-              resolve(this.getCachedVersion());
-            } else {
-              reject(new Error(`GitHub API error: ${res.statusCode}`));
-            }
-          });
-        });
-
-        req.on('error', (e) => {
-          console.error('[Updater] Failed to fetch latest release:', e);
-          resolve(this.getCachedVersion());
-        });
-
-        req.end();
-      });
+      const proxyEnv = process.env.https_proxy || process.env.HTTPS_PROXY || '';
+      const curlCmd = proxyEnv 
+        ? `curl -x "${proxyEnv}" -s https://api.github.com/repos/${this.githubRepo}/releases/latest`
+        : `curl -s https://api.github.com/repos/${this.githubRepo}/releases/latest`;
+      
+      const { stdout } = await execAsync(curlCmd);
+      
+      if (!stdout || stdout.includes('rate limit')) {
+        console.warn('[Updater] GitHub API rate limited, using cached version');
+        return this.getCachedVersion();
+      }
+      
+      try {
+        const release = JSON.parse(stdout);
+        if (release.tag_name) {
+          return release;
+        }
+        return this.getCachedVersion();
+      } catch (e) {
+        console.error('[Updater] Failed to parse GitHub response:', e);
+        return this.getCachedVersion();
+      }
     } catch (error) {
       console.error('[Updater] Exception fetching latest release:', error);
       return this.getCachedVersion();
@@ -218,31 +207,30 @@ export class PluginUpdater {
   }
 
   /**
-   * Download file from URL
+   * Download file from URL (using curl for proxy support)
    */
   private async downloadFile(url: string, destPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const file = createWriteStream(destPath);
-
-      https.get(url, (response) => {
-        if (response.statusCode === 302 || response.statusCode === 301) {
-          // Follow redirect
-          this.downloadFile(response.headers.location!, destPath)
-            .then(resolve)
-            .catch(reject);
-          return;
-        }
-
-        if (response.statusCode !== 200) {
-          reject(new Error(`Download failed: ${response.statusCode}`));
-          return;
-        }
-
-        pipelineAsync(response, file)
-          .then(resolve)
-          .catch(reject);
-      }).on('error', reject);
-    });
+    const proxyEnv = process.env.https_proxy || process.env.HTTPS_PROXY || '';
+    const curlCmd = proxyEnv
+      ? `curl -x "${proxyEnv}" -L -s -o "${destPath}" "${url}"`
+      : `curl -L -s -o "${destPath}" "${url}"`;
+    
+    try {
+      await execAsync(curlCmd);
+      
+      // Verify file was downloaded
+      if (!existsSync(destPath)) {
+        throw new Error('Download failed: file not created');
+      }
+      
+      const { stdout } = await execAsync(`stat -c%s "${destPath}" 2>/dev/null || echo 0`);
+      const size = parseInt(stdout.trim());
+      if (size === 0) {
+        throw new Error('Download failed: empty file');
+      }
+    } catch (error) {
+      throw new Error(`Download failed: ${error}`);
+    }
   }
 
   /**
@@ -310,14 +298,19 @@ export class PluginUpdater {
    * Create backup of current files
    */
   private async createBackup(backupDir: string): Promise<void> {
+    // 创建备份目录
+    await mkdir(backupDir, { recursive: true });
+
     const srcDir = join(this.projectRoot, 'src');
     if (existsSync(srcDir)) {
-      await execAsync(`cp -r "${srcDir}" "${backupDir}/src"`);
+      await mkdir(join(backupDir, 'src'), { recursive: true });
+      await execAsync(`cp -r "${srcDir}/"* "${backupDir}/src/"`);
     }
 
     const distDir = join(this.projectRoot, 'dist');
     if (existsSync(distDir)) {
-      await execAsync(`cp -r "${distDir}" "${backupDir}/dist"`);
+      await mkdir(join(backupDir, 'dist'), { recursive: true });
+      await execAsync(`cp -r "${distDir}/"* "${backupDir}/dist/"`);
     }
 
     const packageJson = join(this.projectRoot, 'package.json');
@@ -475,6 +468,15 @@ export class PluginUpdater {
           const changelog = updateInfo.releaseInfo.body.split('\n').slice(0, 5).join('\n');
           if (changelog) {
             this.notify(`📋 Changes:\n${changelog}`);
+          }
+
+          // Auto-install if enabled
+          if (this.autoInstallEnabled) {
+            this.notify('🔄 Auto-install enabled, starting update...');
+            const success = await this.installUpdate(updateInfo.releaseInfo);
+            if (success) {
+              this.notify('✅ Auto-update completed! Restart Gateway to apply.');
+            }
           }
         }
       } else {

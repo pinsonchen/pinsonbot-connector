@@ -249,6 +249,9 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         ctx.log?.info?.(`[Updater] ${message}`);
       });
 
+      // Enable auto-install
+      updater.setAutoInstall(true);
+
       // Start periodic update check (every 6 hours)
       updater.startPeriodicCheck(6 * 60 * 60 * 1000);
 
