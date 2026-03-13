@@ -1,6 +1,6 @@
 {
   "name": "pinsonbot-connector",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "description": "OpenClaw Channel Plugin for PinsonBots Platform integration with auto-update",
   "main": "index.ts",
   "type": "module",
