@@ -303,14 +303,22 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
             processingDedupKeys.delete(key);
           }
         }
+        // Only set lastError for abnormal disconnects (not normal close or reconnects)
+        const isError = code !== 1000 && code !== 1001;
         ctx.setStatus?.({
           ...ctx.getStatus?.(),
           running: false,
-          lastError: `Disconnected: ${code} ${reason}`,
+          lastError: isError ? `Disconnected: ${code} ${reason}` : null,
         });
-        ctx.log?.warn?.(
-          `[${account.accountId}] Disconnected: ${code} ${reason}`
-        );
+        if (isError) {
+          ctx.log?.warn?.(
+            `[${account.accountId}] Disconnected: ${code} ${reason}`
+          );
+        } else {
+          ctx.log?.info?.(
+            `[${account.accountId}] Disconnected: ${code} ${reason}`
+          );
+        }
       });
 
       client.on("user_message", async ({ content, sessionId, conversationId }: { content: string; sessionId: string; conversationId?: number }) => {
