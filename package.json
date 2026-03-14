@@ -1,6 +1,6 @@
 {
-  "name": "pinsonbot-connector",
-  "version": "2.3.4",
+  "name": "pinsonbot",
+  "version": "2.4.0",
   "description": "OpenClaw Channel Plugin for PinsonBots Platform integration with auto-update",
   "main": "index.ts",
   "type": "module",
@@ -46,6 +46,7 @@
     "openclaw": ">=2026.2.13"
   },
   "openclaw": {
+    "id": "pinsonbot",
     "extensions": ["./dist/index.js"]
   }
 }

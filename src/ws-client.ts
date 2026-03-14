@@ -39,6 +39,8 @@ export class PinsonBotWSClient extends EventEmitter {
   private lastPongTime?: number;
   private conversationHistory: Map<string, Array<{role: string; content: string; timestamp: string}>> = new Map();
   private maxHistoryLength: number = 100;
+  private platformRecoveryInterval?: NodeJS.Timeout;
+  private isManualDisconnect: boolean = false;
 
   constructor(
     lobsterId: string,
@@ -56,8 +58,8 @@ export class PinsonBotWSClient extends EventEmitter {
     this.internalToken = internalToken;
     this.endpoint = endpoint;
 
-    // Connection options
-    this.maxReconnectAttempts = options.maxReconnectAttempts || 5;
+    // Connection options - 默认无限重连
+    this.maxReconnectAttempts = options.maxReconnectAttempts || Infinity;
     this.reconnectDelay = options.reconnectDelay || 5000;
     this.reconnectBackoff = options.reconnectBackoff || 2;
 
@@ -72,6 +74,9 @@ export class PinsonBotWSClient extends EventEmitter {
    * Connect to PinsonBots Platform
    */
   connect(): void {
+    // 重置手动断开标志
+    this.isManualDisconnect = false;
+
     if (
       this.ws &&
       (this.ws.readyState === WebSocket.CONNECTING ||
@@ -90,6 +95,8 @@ export class PinsonBotWSClient extends EventEmitter {
         console.log("[PinsonBotWS] Connected successfully");
         this.connected = true;
         this.reconnectAttempts = 0;
+        this.isManualDisconnect = false;
+        this.stopPlatformRecoveryCheck();
         this.emit("connected", { lobsterId: this.lobsterId });
 
         // Start health check
@@ -141,7 +148,9 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   disconnect(): void {
     console.log("[PinsonBotWS] Manual disconnect requested");
+    this.isManualDisconnect = true;
     this.stopHealthCheck();
+    this.stopPlatformRecoveryCheck();
 
     if (this.ws) {
       this.ws.close(1000, "Client disconnect");
@@ -415,27 +424,77 @@ export class PinsonBotWSClient extends EventEmitter {
    * Schedule reconnection after disconnection
    */
   private scheduleReconnect(closeCode: number): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error("[PinsonBotWS] Max reconnection attempts reached");
-      this.emit("max_reconnect_attempts_reached", {
-        attempts: this.reconnectAttempts,
-      });
+    // 如果是手动断开，不重连
+    if (this.isManualDisconnect) {
+      console.log("[PinsonBotWS] Manual disconnect, skipping reconnect");
       return;
     }
 
-    const delay =
-      this.reconnectDelay *
-      Math.pow(this.reconnectBackoff, this.reconnectAttempts);
+    // 如果超过最大重连次数，启动周期性平台恢复检测
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.warn("[PinsonBotWS] Max reconnection attempts reached, starting platform recovery check");
+      this.emit("max_reconnect_attempts_reached", {
+        attempts: this.reconnectAttempts,
+      });
+      this.startPlatformRecoveryCheck();
+      return;
+    }
+
+    // 指数退避重连，但最大延迟不超过 5 分钟
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(this.reconnectBackoff, this.reconnectAttempts),
+      5 * 60 * 1000
+    );
     this.reconnectAttempts++;
 
     console.log(
-      `[PinsonBotWS] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+      `[PinsonBotWS] Scheduling reconnect in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts === Infinity ? '∞' : this.maxReconnectAttempts})`
     );
 
     setTimeout(() => {
       console.log("[PinsonBotWS] Attempting reconnection...");
       this.connect();
     }, delay);
+  }
+
+  /**
+   * Start periodic platform recovery check
+   * 当达到最大重连次数后，定期检测平台是否恢复
+   */
+  private startPlatformRecoveryCheck(): void {
+    if (this.platformRecoveryInterval) {
+      return; // 已经在检测中
+    }
+
+    console.log("[PinsonBotWS] Starting platform recovery check (every 60s)");
+    
+    this.platformRecoveryInterval = setInterval(async () => {
+      if (this.isConnected()) {
+        this.stopPlatformRecoveryCheck();
+        return;
+      }
+
+      console.log("[PinsonBotWS] Checking if platform is available...");
+      
+      try {
+        // 尝试连接
+        this.reconnectAttempts = 0; // 重置重连计数
+        this.connect();
+      } catch (error) {
+        console.error("[PinsonBotWS] Platform recovery check failed:", error);
+      }
+    }, 60000); // 每 60 秒检测一次
+  }
+
+  /**
+   * Stop platform recovery check
+   */
+  private stopPlatformRecoveryCheck(): void {
+    if (this.platformRecoveryInterval) {
+      clearInterval(this.platformRecoveryInterval);
+      this.platformRecoveryInterval = undefined;
+      console.log("[PinsonBotWS] Platform recovery check stopped");
+    }
   }
 
   /**
