@@ -87,6 +87,51 @@ const inboundCountersByAccount = new Map<
   }
 >();
 
+// ============ Security Isolation ============
+
+/**
+ * 安全隔离配置
+ * 
+ * 管理员会话格式: pinsonbot:lobster_id:default 或 pinsonbot:default
+ * 用户会话格式: pinsonbot:其他标识符
+ */
+interface SecurityConfig {
+  adminSessionPatterns: RegExp[];  // 管理员会话匹配模式
+  adminAgentId: string;            // 管理员使用的代理 ID
+  userAgentId: string;             // 用户使用的代理 ID
+}
+
+const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
+  adminSessionPatterns: [
+    /^pinsonbot:\d+:default$/,      // pinsonbot:8:default
+    /^pinsonbot:default$/,          // pinsonbot:default
+    /^pinsonbot:lobster_id:default$/, // pinsonbot:lobster_id:default
+  ],
+  adminAgentId: "admin",
+  userAgentId: "user",
+};
+
+/**
+ * 检查会话是否为管理员会话
+ */
+function isAdminSession(sessionKey: string, config: SecurityConfig = DEFAULT_SECURITY_CONFIG): boolean {
+  return config.adminSessionPatterns.some(pattern => pattern.test(sessionKey));
+}
+
+/**
+ * 根据会话获取目标代理 ID
+ */
+function getTargetAgentId(sessionKey: string, config: SecurityConfig = DEFAULT_SECURITY_CONFIG): string {
+  return isAdminSession(sessionKey, config) ? config.adminAgentId : config.userAgentId;
+}
+
+/**
+ * 获取会话角色描述
+ */
+function getSessionRole(sessionKey: string, config: SecurityConfig = DEFAULT_SECURITY_CONFIG): "admin" | "user" {
+  return isAdminSession(sessionKey, config) ? "admin" : "user";
+}
+
 function getInboundCounters(accountId: string) {
   const existing = inboundCountersByAccount.get(accountId);
   if (existing) {
@@ -484,6 +529,23 @@ async function handleInboundMessage(
     }`
   );
 
+  // ============ Security Isolation: Identify Role ============
+  const sessionKey = `pinsonbot:${sessionId}`;
+  const role = getSessionRole(sessionKey);
+  const targetAgentId = getTargetAgentId(sessionKey);
+  
+  ctx.log?.info?.(
+    `[${account.accountId}] Session: ${sessionKey}, Role: ${role}, Target Agent: ${targetAgentId}`
+  );
+
+  // Security Isolation: 根据角色添加权限提示
+  const rolePrompt = role === "admin" 
+    ? "" // 管理员不需要额外提示
+    : `\n\n[系统提示：你是用户助手，只能使用安全的工具（搜索、阅读）。如果用户请求执行命令、修改文件或其他管理员操作，请礼貌地告知这需要管理员权限，建议用户联系管理员。]\n\n`;
+
+  // 为非管理员用户添加权限提示
+  const processedContent = role === "admin" ? safeContent : rolePrompt + safeContent;
+
   // Message deduplication
   const dedupKey = `${account.accountId}:${sessionId}:${safeContent}:${Date.now()}`;
   if (isMessageProcessed(dedupKey)) {
@@ -521,19 +583,26 @@ async function handleInboundMessage(
     let fullResponse = "";
 
     // Use OpenClaw's reply dispatcher for AI response
-    ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher...`);
+    // Security Isolation: Pass role and target agent in context
+    ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher (role=${role}, agent=${targetAgentId})...`);
     
     const result = await ctx.channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: {
         cfg: ctx.cfg,
         peerId: sessionId,
-        text: safeContent,
-        Body: safeContent,
-        BodyForAgent: safeContent,
-        SessionKey: `pinsonbot:${sessionId}`,
+        text: processedContent,
+        Body: processedContent,
+        BodyForAgent: processedContent,
+        SessionKey: sessionKey,
         AccountId: account.accountId,
         ChatType: "direct",
         From: sessionId,
+        // Security Isolation: Add role and target agent info
+        _securityContext: {
+          role,
+          targetAgentId,
+          isAdmin: role === "admin",
+        },
       } as any,
       cfg: ctx.cfg,
       dispatcherOptions: {
