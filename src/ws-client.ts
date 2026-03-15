@@ -381,7 +381,12 @@ export class PinsonBotWSClient extends EventEmitter {
         const sessionId = innerData?.session_id || innerData?.sessionId || message.data?.session_id || "";
         const conversationId = innerData?.conversation_id || innerData?.conversationId || message.data?.conversation_id;
         
-        console.log(`[PinsonBotWS] Emitting user_message: content="${content?.substring(0, 50)}", sessionId="${sessionId}"`);
+        // Extract user role information (NEW)
+        const userId = innerData?.user_id || innerData?.userId || "";
+        const userRole = innerData?.user_role || innerData?.userRole || "";
+        const isOwner = innerData?.is_owner || innerData?.isOwner || false;
+        
+        console.log(`[PinsonBotWS] Emitting user_message: content="${content?.substring(0, 50)}", sessionId="${sessionId}", userId="${userId}", userRole="${userRole}", isOwner="${isOwner}"`);
         
         // Store user message in history
         this.storeMessage(sessionId, "user", content);
@@ -390,6 +395,9 @@ export class PinsonBotWSClient extends EventEmitter {
           content,
           sessionId,
           conversationId,
+          userId,
+          userRole,
+          isOwner,
           timestamp: message.timestamp,
         });
         break;

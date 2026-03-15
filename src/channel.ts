@@ -405,9 +405,23 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         }
       });
 
-      client.on("user_message", async ({ content, sessionId, conversationId }: { content: string; sessionId: string; conversationId?: number }) => {
+      client.on("user_message", async ({ 
+        content, 
+        sessionId, 
+        conversationId,
+        userId,
+        userRole,
+        isOwner 
+      }: { 
+        content: string; 
+        sessionId: string; 
+        conversationId?: number;
+        userId?: string;
+        userRole?: string;
+        isOwner?: boolean;
+      }) => {
         await handleInboundMessage(
-          { content, sessionId, conversationId },
+          { content, sessionId, conversationId, userId, userRole, isOwner },
           client,
           ctx,
           account
@@ -508,12 +522,19 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
 // ============ Inbound Message Handler ============
 
 async function handleInboundMessage(
-  message: { content: string; sessionId: string; conversationId?: number },
+  message: { 
+    content: string; 
+    sessionId: string; 
+    conversationId?: number;
+    userId?: string;
+    userRole?: string;
+    isOwner?: boolean;
+  },
   client: PinsonBotWSClient,
   ctx: GatewayStartContext,
   account: ResolvedAccount
 ): Promise<void> {
-  const { content, sessionId, conversationId } = message;
+  const { content, sessionId, conversationId, userId, userRole, isOwner } = message;
 
   // Debug: log the full message structure
   ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify(message)}`);
@@ -530,10 +551,29 @@ async function handleInboundMessage(
   );
 
   // ============ Security Isolation: Identify Role ============
-  // Build session key (avoid double prefix)
-  const sessionKey = sessionId.startsWith('pinsonbot:') ? sessionId : `pinsonbot:${sessionId}`;
-  const role = getSessionRole(sessionKey);
-  const targetAgentId = getTargetAgentId(sessionKey);
+  // NEW: Determine role based on user-lobster affiliation
+  // Priority: 1. isOwner flag, 2. userRole field, 3. session pattern fallback
+  let role: "admin" | "user" = "user";
+  let targetAgentId = "user";
+  
+  if (isOwner === true || userRole === "owner" || userRole === "admin") {
+    role = "admin";
+    targetAgentId = "admin";
+  } else if (userRole === "member" || userRole === "guest") {
+    role = "user";
+    targetAgentId = "user";
+  } else {
+    // Fallback: use session pattern detection for backward compatibility
+    const sessionKeyForRole = sessionId.startsWith('pinsonbot:') ? sessionId : `pinsonbot:${sessionId}`;
+    role = getSessionRole(sessionKeyForRole);
+    targetAgentId = getTargetAgentId(sessionKeyForRole);
+  }
+  
+  // Build new session key format: pinsonbot:{lobster_id}:{user_role}:{user_id}
+  const lobsterId = account.config.accounts?.[account.accountId]?.lobsterId || "unknown";
+  const effectiveUserRole = role === "admin" ? (userRole || "admin") : (userRole || "user");
+  const effectiveUserId = userId || "unknown";
+  const sessionKey = `pinsonbot:${lobsterId}:${effectiveUserRole}:${effectiveUserId}`;
   
   ctx.log?.info?.(
     `[${account.accountId}] Session: ${sessionKey}, Role: ${role}, Target Agent: ${targetAgentId}`
