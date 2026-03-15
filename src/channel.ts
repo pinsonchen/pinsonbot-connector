@@ -578,11 +578,11 @@ async function handleInboundMessage(
 
   // Security Isolation: 根据角色添加权限提示
   const rolePrompt = role === "admin" 
-    ? "" // 管理员不需要额外提示
+    ? `\n\n[系统提示：你是管理员助手，拥有完整权限。你可以执行命令、修改文件、管理系统等管理员操作。请谨慎使用这些权限，确保操作安全。]\n\n`
     : `\n\n[系统提示：你是用户助手，只能使用安全的工具（搜索、阅读）。如果用户请求执行命令、修改文件或其他管理员操作，请礼貌地告知这需要管理员权限，建议用户联系管理员。]\n\n`;
 
-  // 为非管理员用户添加权限提示
-  const processedContent = role === "admin" ? safeContent : rolePrompt + safeContent;
+  // 根据角色添加权限提示
+  const processedContent = rolePrompt + safeContent;
 
   // Message deduplication
   const dedupKey = `${account.accountId}:${sessionId}:${safeContent}:${Date.now()}`;
