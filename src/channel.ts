@@ -530,7 +530,8 @@ async function handleInboundMessage(
   );
 
   // ============ Security Isolation: Identify Role ============
-  const sessionKey = `pinsonbot:${sessionId}`;
+  // Build session key (avoid double prefix)
+  const sessionKey = sessionId.startsWith('pinsonbot:') ? sessionId : `pinsonbot:${sessionId}`;
   const role = getSessionRole(sessionKey);
   const targetAgentId = getTargetAgentId(sessionKey);
   
@@ -681,8 +682,8 @@ async function dispatchToGatewayStreaming(
   }
 
   try {
-    // Build session key directly
-    const sessionKey = `pinsonbot:${sessionId}`;
+    // Build session key directly (avoid double prefix)
+    const sessionKey = sessionId.startsWith('pinsonbot:') ? sessionId : `pinsonbot:${sessionId}`;
 
     ctx.log?.info?.(`[${account.accountId}] Dispatching to AI, sessionKey=${sessionKey}, message="${message}"`);
 
