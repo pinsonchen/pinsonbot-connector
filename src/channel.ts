@@ -110,9 +110,9 @@ const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
     // 新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
     /^pinsonbot:\d+:(owner|admin):\d+$/,  // pinsonbot:8:owner:123
     /^pinsonbot:\d+:(owner|admin):[^:]+$/,  // pinsonbot:8:owner:any_id
-    // 群聊格式：pinsonbot:{lobster_id}:group:{group_id}:{user_role}:{user_id}
-    /^pinsonbot:\d+:group:\d+:(owner|admin):\d+$/,  // pinsonbot:8:group:1:owner:123
-    /^pinsonbot:\d+:group:\d+:(owner|admin):[^:]+/,  // pinsonbot:8:group:1:owner:any_id
+    // 群聊格式：pinsonbot:{lobster_id}:{user_role}:{user_id}:group:{group_id}:...
+    /^pinsonbot:\d+:(owner|admin):\d+:group:/,  // pinsonbot:8:owner:123:group:1:user:123
+    /^pinsonbot:\d+:(owner|admin):[^:]+:group:/,  // pinsonbot:8:owner:any_id:group:...
   ],
   adminAgentId: "admin",
   userAgentId: "user",
