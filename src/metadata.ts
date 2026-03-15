@@ -7,6 +7,7 @@
 import os from "os";
 import fs from "fs";
 import path from "path";
+import { getStandardizedRegion } from "./region.js";
 
 export interface OpenClawMetadata {
   // 系统信息
@@ -140,64 +141,11 @@ function collectModelInfo(): Partial<OpenClawMetadata> {
 }
 
 /**
- * 获取区域信息
- * 优先使用阿里云 ECS 元数据，其次使用 IP 定位
- */
-function getRegion(): string {
-  try {
-    // 方法1: 尝试从阿里云 ECS 元数据获取（最准确）
-    const { execSync } = require("child_process");
-    try {
-      const region = execSync(
-        "curl -s --connect-timeout 2 http://100.100.100.200/latest/meta-data/region-id 2>/dev/null",
-        { timeout: 3000 }
-      ).toString().trim();
-      if (region && region.length > 0) {
-        return region; // e.g., "cn-hangzhou"
-      }
-    } catch (e) {
-      // 不是阿里云 ECS 或元数据服务不可用
-    }
-    
-    // 方法2: 尝试从 IP 信息获取
-    try {
-      const ipinfo = execSync(
-        "curl -s --connect-timeout 3 https://ipinfo.io/json 2>/dev/null",
-        { timeout: 5000 }
-      ).toString().trim();
-      const data = JSON.parse(ipinfo);
-      if (data.city && data.country) {
-        return `${data.city}, ${data.country}`; // e.g., "Hangzhou, CN"
-      }
-    } catch (e) {
-      // IP 定位失败
-    }
-    
-    // 方法3: 从主机名推断（阿里云主机名通常包含区域缩写）
-    const hostname = os.hostname();
-    if (hostname.includes("hz") || hostname.includes("hangzhou")) {
-      return "cn-hangzhou";
-    } else if (hostname.includes("sg") || hostname.includes("singapore")) {
-      return "ap-southeast-1";
-    } else if (hostname.includes("bj") || hostname.includes("beijing")) {
-      return "cn-beijing";
-    } else if (hostname.includes("sh") || hostname.includes("shanghai")) {
-      return "cn-shanghai";
-    }
-  } catch (e) {
-    // 忽略错误
-  }
-  
-  // 方法4: 回退到环境变量或默认值
-  return process.env.OPENCLAW_REGION || "unknown";
-}
-
-/**
  * 收集位置信息
  */
 function collectLocationInfo(): Partial<OpenClawMetadata> {
   return {
-    region: getRegion(),
+    region: getStandardizedRegion(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   };
 }
