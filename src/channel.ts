@@ -624,6 +624,11 @@ async function handleInboundMessage(
     // Security Isolation: Pass role and target agent in context
     ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher (role=${role}, agent=${targetAgentId})...`);
     
+    // SessionKey 逻辑：
+    // - 如果 sessionId 已包含 `:` 说明是完整格式，直接使用
+    // - 否则添加 `pinsonbot:` 前缀
+    const sessionKey = sessionId.includes(':') ? sessionId : `pinsonbot:${sessionId}`;
+    
     const result = await ctx.channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: {
         cfg: ctx.cfg,
