@@ -11,8 +11,8 @@
     "dev": "ts-node-dev --respawn src/index.ts",
     "lint": "eslint src/**/*.ts",
     "test": "jest",
-    "check-update": "node dist/updater.js --check",
-    "auto-update": "node dist/updater.js --update"
+    "check-update": "node dist/src/updater.js --check",
+    "auto-update": "node dist/src/updater.js --update"
   },
   "keywords": [
     "openclaw",
