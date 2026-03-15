@@ -88,9 +88,8 @@ export interface PinsonBotMessage {
   data: {
     content?: string;
     session_id?: string;
-    user_id?: string;      // 新增: 用户ID
-    user_role?: string;    // 新增: 用户角色 (owner|admin|member|guest)
-    is_owner?: boolean;    // 新增: 是否为所有者
+    user_id?: string;      // 用户ID
+    user_role?: string;    // 用户角色 (owner|admin|member|guest)
     role?: string;
     messages?: any[];
     [key: string]: any;
@@ -104,9 +103,8 @@ export interface PinsonBotInboundMessage {
   data: {
     content?: string;
     session_id: string;
-    user_id?: string;      // 新增: 用户ID
-    user_role?: string;    // 新增: 用户角色
-    is_owner?: boolean;    // 新增: 是否为所有者
+    user_id?: string;      // 用户ID
+    user_role?: string;    // 用户角色
     conversation_id?: number;
     role?: string;
     messages?: any[];
@@ -122,9 +120,8 @@ export interface WSClientEvents {
   user_message: { 
     content: string; 
     sessionId: string; 
-    userId?: string;       // 新增
-    userRole?: string;     // 新增
-    isOwner?: boolean;     // 新增
+    userId?: string;       // 用户ID
+    userRole?: string;     // 用户角色
     timestamp?: string; 
   };
   history: { sessionId: string; messages: any[] };

@@ -410,18 +410,16 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         sessionId, 
         conversationId,
         userId,
-        userRole,
-        isOwner 
+        userRole
       }: { 
         content: string; 
         sessionId: string; 
         conversationId?: number;
         userId?: string;
         userRole?: string;
-        isOwner?: boolean;
       }) => {
         await handleInboundMessage(
-          { content, sessionId, conversationId, userId, userRole, isOwner },
+          { content, sessionId, conversationId, userId, userRole },
           client,
           ctx,
           account
@@ -528,13 +526,12 @@ async function handleInboundMessage(
     conversationId?: number;
     userId?: string;
     userRole?: string;
-    isOwner?: boolean;
   },
   client: PinsonBotWSClient,
   ctx: GatewayStartContext,
   account: ResolvedAccount
 ): Promise<void> {
-  const { content, sessionId, conversationId, userId, userRole, isOwner } = message;
+  const { content, sessionId, conversationId, userId, userRole } = message;
 
   // Debug: log the full message structure
   ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify(message)}`);
@@ -551,12 +548,12 @@ async function handleInboundMessage(
   );
 
   // ============ Security Isolation: Identify Role ============
-  // NEW: Determine role based on user-lobster affiliation
-  // Priority: 1. isOwner flag, 2. userRole field, 3. session pattern fallback
+  // NEW: Determine role based on user_role only
+  // user_role: owner|admin|member|guest
   let role: "admin" | "user" = "user";
   let targetAgentId = "user";
   
-  if (isOwner === true || userRole === "owner" || userRole === "admin") {
+  if (userRole === "owner" || userRole === "admin") {
     role = "admin";
     targetAgentId = "admin";
   } else if (userRole === "member" || userRole === "guest") {
@@ -571,7 +568,7 @@ async function handleInboundMessage(
   
   // Build new session key format: pinsonbot:{lobster_id}:{user_role}:{user_id}
   const lobsterId = account.config.accounts?.[account.accountId]?.lobsterId || "unknown";
-  const effectiveUserRole = role === "admin" ? (userRole || "admin") : (userRole || "user");
+  const effectiveUserRole = userRole || (role === "admin" ? "admin" : "user");
   const effectiveUserId = userId || "unknown";
   const sessionKey = `pinsonbot:${lobsterId}:${effectiveUserRole}:${effectiveUserId}`;
   
