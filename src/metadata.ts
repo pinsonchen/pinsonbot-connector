@@ -4,8 +4,9 @@
  * 收集 OpenClaw 实例的基础属性信息，与 PinsonBots 平台交互
  */
 
-import { execSync } from "child_process";
 import os from "os";
+import fs from "fs";
+import path from "path";
 
 export interface OpenClawMetadata {
   // 系统信息
@@ -39,6 +40,62 @@ export interface OpenClawMetadata {
 const startTime = Date.now();
 
 /**
+ * 获取 OpenClaw 版本
+ */
+function getOpenClawVersion(): string {
+  try {
+    // 尝试从 package.json 读取
+    const packagePath = "/usr/lib/node_modules/openclaw/package.json";
+    if (fs.existsSync(packagePath)) {
+      const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
+      return pkg.version || "unknown";
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+  
+  // 已知版本
+  return "2026.3.13";
+}
+
+/**
+ * 获取 Gateway 版本（与 OpenClaw 相同）
+ */
+function getGatewayVersion(): string {
+  return getOpenClawVersion();
+}
+
+/**
+ * 获取默认模型
+ */
+function getDefaultModel(): string {
+  try {
+    // 从 OpenClaw 配置文件读取
+    const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json");
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      // 尝试多种路径获取默认模型
+      const model = config.agents?.defaults?.model?.primary ||
+                   config.models?.defaults?.primary ||
+                   config.defaultModel;
+      if (model) return model;
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+  
+  // 已知默认值
+  return "bailian/glm-5";
+}
+
+/**
+ * 获取当前模型（从环境变量或配置）
+ */
+function getCurrentModel(): string {
+  return process.env.OPENCLAW_CURRENT_MODEL || getDefaultModel();
+}
+
+/**
  * 收集系统信息
  */
 function collectSystemInfo(): Partial<OpenClawMetadata> {
@@ -66,30 +123,28 @@ function collectSystemInfo(): Partial<OpenClawMetadata> {
  */
 function collectOpenClawInfo(): Partial<OpenClawMetadata> {
   return {
-    openclaw_version: process.env.OPENCLAW_VERSION || "unknown",
-    gateway_version: process.env.OPENCLAW_GATEWAY_VERSION || "unknown",
-    plugin_version: "2.6.0-beta.3",
+    openclaw_version: getOpenClawVersion(),
+    gateway_version: getGatewayVersion(),
+    plugin_version: "2.7.0-beta.1",
   };
 }
 
 /**
  * 收集模型信息
- * 从环境变量或配置中读取
  */
 function collectModelInfo(): Partial<OpenClawMetadata> {
   return {
-    default_model: process.env.OPENCLAW_DEFAULT_MODEL || "claude-3-opus",
-    current_model: process.env.OPENCLAW_CURRENT_MODEL || process.env.OPENCLAW_DEFAULT_MODEL || "claude-3-opus",
+    default_model: getDefaultModel(),
+    current_model: getCurrentModel(),
   };
 }
 
 /**
  * 收集位置信息
- * 从环境变量或配置中读取
  */
 function collectLocationInfo(): Partial<OpenClawMetadata> {
   return {
-    region: process.env.OPENCLAW_REGION || "unknown",
+    region: process.env.OPENCLAW_REGION || "Hangzhou",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   };
 }
@@ -110,33 +165,14 @@ function collectRuntimeInfo(): Partial<OpenClawMetadata> {
  * 收集能力信息
  */
 function collectCapabilities(): string[] {
-  const capabilities: string[] = [];
-  
-  // 基础能力
-  capabilities.push("text_generation");
-  capabilities.push("streaming");
-  
-  // 工具能力
-  if (process.env.OPENCLAW_TOOLS_ENABLED === "true") {
-    capabilities.push("tools");
-  }
-  
-  // 文件操作能力
-  if (process.env.OPENCLAW_FILE_ACCESS === "true") {
-    capabilities.push("file_access");
-  }
-  
-  // 网络能力
-  if (process.env.OPENCLAW_NETWORK_ACCESS === "true") {
-    capabilities.push("network_access");
-  }
-  
-  // 代码执行能力
-  if (process.env.OPENCLAW_CODE_EXECUTION === "true") {
-    capabilities.push("code_execution");
-  }
-  
-  return capabilities;
+  return [
+    "text_generation",
+    "streaming",
+    "tools",
+    "file_access",
+    "network_access",
+    "code_execution",
+  ];
 }
 
 /**
@@ -184,9 +220,9 @@ export function createHeartbeatMessage(metadata: Partial<OpenClawMetadata>): { t
  */
 export function getMinimalMetadata(): object {
   return {
-    openclaw_version: process.env.OPENCLAW_VERSION || "unknown",
-    plugin_version: "2.6.0-beta.3",
-    default_model: process.env.OPENCLAW_DEFAULT_MODEL || "claude-3-opus",
-    region: process.env.OPENCLAW_REGION || "unknown",
+    openclaw_version: getOpenClawVersion(),
+    plugin_version: "2.7.0-beta.1",
+    default_model: getDefaultModel(),
+    region: process.env.OPENCLAW_REGION || "Hangzhou",
   };
 }
