@@ -68,7 +68,7 @@ function collectOpenClawInfo(): Partial<OpenClawMetadata> {
   return {
     openclaw_version: process.env.OPENCLAW_VERSION || "unknown",
     gateway_version: process.env.OPENCLAW_GATEWAY_VERSION || "unknown",
-    plugin_version: "2.6.0-beta.2",
+    plugin_version: "2.6.0-beta.3",
   };
 }
 
@@ -185,7 +185,7 @@ export function createHeartbeatMessage(metadata: Partial<OpenClawMetadata>): { t
 export function getMinimalMetadata(): object {
   return {
     openclaw_version: process.env.OPENCLAW_VERSION || "unknown",
-    plugin_version: "2.6.0-beta.2",
+    plugin_version: "2.6.0-beta.3",
     default_model: process.env.OPENCLAW_DEFAULT_MODEL || "claude-3-opus",
     region: process.env.OPENCLAW_REGION || "unknown",
   };
