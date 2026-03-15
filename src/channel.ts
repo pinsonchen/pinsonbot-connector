@@ -103,9 +103,16 @@ interface SecurityConfig {
 
 const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
   adminSessionPatterns: [
+    // 旧格式（向后兼容）
     /^pinsonbot:\d+:default$/,      // pinsonbot:8:default
     /^pinsonbot:default$/,          // pinsonbot:default
     /^pinsonbot:lobster_id:default$/, // pinsonbot:lobster_id:default
+    // 新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
+    /^pinsonbot:\d+:(owner|admin):\d+$/,  // pinsonbot:8:owner:123
+    /^pinsonbot:\d+:(owner|admin):[^:]+$/,  // pinsonbot:8:owner:any_id
+    // 群聊格式：pinsonbot:{lobster_id}:group:{group_id}:{user_role}:{user_id}
+    /^pinsonbot:\d+:group:\d+:(owner|admin):\d+$/,  // pinsonbot:8:group:1:owner:123
+    /^pinsonbot:\d+:group:\d+:(owner|admin):[^:]+/,  // pinsonbot:8:group:1:owner:any_id
   ],
   adminAgentId: "admin",
   userAgentId: "user",
@@ -566,11 +573,20 @@ async function handleInboundMessage(
     targetAgentId = getTargetAgentId(sessionKeyForRole);
   }
   
-  // Build new session key format: pinsonbot:{lobster_id}:{user_role}:{user_id}
-  const lobsterId = account.config.accounts?.[account.accountId]?.lobsterId || "unknown";
-  const effectiveUserRole = userRole || (role === "admin" ? "admin" : "user");
-  const effectiveUserId = userId || "unknown";
-  const sessionKey = `pinsonbot:${lobsterId}:${effectiveUserRole}:${effectiveUserId}`;
+  // SessionKey 逻辑：
+  // - 如果 sessionId 已包含 `:` 说明是完整格式（群聊或新格式），直接使用
+  // - 否则构建新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
+  let sessionKey: string;
+  if (sessionId.includes(':')) {
+    // 已经是完整格式，直接使用
+    sessionKey = sessionId;
+  } else {
+    // 旧格式（纯数字），构建新格式
+    const lobsterId = account.config.accounts?.[account.accountId]?.lobsterId || "unknown";
+    const effectiveUserRole = userRole || (role === "admin" ? "admin" : "user");
+    const effectiveUserId = userId || "unknown";
+    sessionKey = `pinsonbot:${lobsterId}:${effectiveUserRole}:${effectiveUserId}`;
+  }
   
   ctx.log?.info?.(
     `[${account.accountId}] Session: ${sessionKey}, Role: ${role}, Target Agent: ${targetAgentId}`
@@ -623,11 +639,6 @@ async function handleInboundMessage(
     // Use OpenClaw's reply dispatcher for AI response
     // Security Isolation: Pass role and target agent in context
     ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher (role=${role}, agent=${targetAgentId})...`);
-    
-    // SessionKey 逻辑：
-    // - 如果 sessionId 已包含 `:` 说明是完整格式，直接使用
-    // - 否则添加 `pinsonbot:` 前缀
-    const sessionKey = sessionId.includes(':') ? sessionId : `pinsonbot:${sessionId}`;
     
     const result = await ctx.channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: {
