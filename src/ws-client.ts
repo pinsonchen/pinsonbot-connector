@@ -381,9 +381,20 @@ export class PinsonBotWSClient extends EventEmitter {
         const sessionId = innerData?.session_id || innerData?.sessionId || message.data?.session_id || "";
         const conversationId = innerData?.conversation_id || innerData?.conversationId || message.data?.conversation_id;
         
-        // Extract user role information
-        const userId = innerData?.user_id || innerData?.userId || "";
-        const userRole = innerData?.user_role || innerData?.userRole || "";
+        // Extract user role information from message or parse from session_id
+        // New session_id format: pinsonbot:{lobster_id}:{user_role}:{user_id}
+        let userId = innerData?.user_id || innerData?.userId || "";
+        let userRole = innerData?.user_role || innerData?.userRole || "";
+        
+        // If user_id/user_role not provided, parse from session_id
+        if ((!userId || !userRole) && sessionId.startsWith('pinsonbot:')) {
+          const parts = sessionId.split(':');
+          if (parts.length >= 4) {
+            // pinsonbot:lobster_id:user_role:user_id
+            userRole = userRole || parts[2] || "";
+            userId = userId || parts[3] || "";
+          }
+        }
         
         console.log(`[PinsonBotWS] Emitting user_message: content="${content?.substring(0, 50)}", sessionId="${sessionId}", userId="${userId}", userRole="${userRole}"`);
         
