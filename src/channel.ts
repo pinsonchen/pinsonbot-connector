@@ -103,14 +103,19 @@ interface SecurityConfig {
 
 const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
   adminSessionPatterns: [
-    // 旧格式（向后兼容）
+    // ============ 旧格式（向后兼容）============
+    // 单聊旧格式
     /^pinsonbot:\d+:default$/,      // pinsonbot:8:default
     /^pinsonbot:default$/,          // pinsonbot:default
     /^pinsonbot:lobster_id:default$/, // pinsonbot:lobster_id:default
-    // 新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
+    // 群聊旧格式（历史格式，默认管理员权限）
+    /^pinsonbot:\d+:group:\d+:user:\d+$/,  // pinsonbot:8:group:1:user:123
+    /^pinsonbot:\d+:group:\d+/,  // pinsonbot:8:group:1:* （所有旧群聊格式）
+    // ============ 新格式 ============
+    // 单聊新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
     /^pinsonbot:\d+:(owner|admin):\d+$/,  // pinsonbot:8:owner:123
     /^pinsonbot:\d+:(owner|admin):[^:]+$/,  // pinsonbot:8:owner:any_id
-    // 群聊格式：pinsonbot:{lobster_id}:{user_role}:{user_id}:group:{group_id}:...
+    // 群聊新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}:group:{group_id}:...
     /^pinsonbot:\d+:(owner|admin):\d+:group:/,  // pinsonbot:8:owner:123:group:1:user:123
     /^pinsonbot:\d+:(owner|admin):[^:]+:group:/,  // pinsonbot:8:owner:any_id:group:...
   ],

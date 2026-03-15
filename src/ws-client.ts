@@ -382,7 +382,10 @@ export class PinsonBotWSClient extends EventEmitter {
         const conversationId = innerData?.conversation_id || innerData?.conversationId || message.data?.conversation_id;
         
         // Extract user role information from message or parse from session_id
-        // New session_id format: pinsonbot:{lobster_id}:{user_role}:{user_id}
+        // Session ID formats:
+        // - New: pinsonbot:{lobster_id}:{user_role}:{user_id}[:group:...]
+        // - Old: pinsonbot:{lobster_id}:group:{group_id}:{session_type}:{extra_id}
+        // - Old: pinsonbot:{lobster_id}:default
         let userId = innerData?.user_id || innerData?.userId || "";
         let userRole = innerData?.user_role || innerData?.userRole || "";
         
@@ -390,9 +393,25 @@ export class PinsonBotWSClient extends EventEmitter {
         if ((!userId || !userRole) && sessionId.startsWith('pinsonbot:')) {
           const parts = sessionId.split(':');
           if (parts.length >= 4) {
-            // pinsonbot:lobster_id:user_role:user_id
-            userRole = userRole || parts[2] || "";
-            userId = userId || parts[3] || "";
+            // Check if it's old group format: pinsonbot:lobster_id:group:...
+            if (parts[2] === 'group') {
+              // Old format: no user_role info, use fallback
+              // For backward compatibility, treat as admin
+              userRole = userRole || "admin";
+              // userId might be in parts[5] if format is :group:X:user:USER_ID
+              if (parts[4] === 'user' && parts[5]) {
+                userId = userId || parts[5];
+              } else if (parts[4] === 'member' && parts[5]) {
+                userId = userId || parts[5];
+              }
+            } else if (parts[2] === 'default') {
+              // Old single chat format: pinsonbot:lobster_id:default
+              userRole = userRole || "admin";
+            } else {
+              // New format: pinsonbot:lobster_id:user_role:user_id[:group:...]
+              userRole = userRole || parts[2] || "";
+              userId = userId || parts[3] || "";
+            }
           }
         }
         
