@@ -126,7 +126,7 @@ function collectOpenClawInfo(): Partial<OpenClawMetadata> {
   return {
     openclaw_version: getOpenClawVersion(),
     gateway_version: getGatewayVersion(),
-    plugin_version: "2.7.0-beta.1",
+    plugin_version: "2.7.0",
   };
 }
 
@@ -222,7 +222,7 @@ export function createHeartbeatMessage(metadata: Partial<OpenClawMetadata>): { t
 export function getMinimalMetadata(): object {
   return {
     openclaw_version: getOpenClawVersion(),
-    plugin_version: "2.7.0-beta.1",
+    plugin_version: "2.7.0",
     default_model: getDefaultModel(),
     region: process.env.OPENCLAW_REGION || "Hangzhou",
   };
