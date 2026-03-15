@@ -11,6 +11,7 @@
 import WebSocket from "ws";
 import { EventEmitter } from "events";
 import type { PinsonBotMessage } from "./types.js";
+import { collectMetadata, createMetadataMessage, createHeartbeatMessage } from "./metadata.js";
 
 interface WSMessage {
   type: string;
@@ -98,6 +99,9 @@ export class PinsonBotWSClient extends EventEmitter {
         this.isManualDisconnect = false;
         this.stopPlatformRecoveryCheck();
         this.emit("connected", { lobsterId: this.lobsterId });
+
+        // Send metadata after connection
+        this.sendMetadata();
 
         // Start health check
         this.startHealthCheck();
@@ -294,6 +298,36 @@ export class PinsonBotWSClient extends EventEmitter {
       reconnectAttempts: this.reconnectAttempts,
       historySessions: this.conversationHistory.size,
     };
+  }
+
+  /**
+   * Send metadata to PinsonBots Platform
+   * Called after connection is established
+   */
+  sendMetadata(): boolean {
+    try {
+      const metadata = collectMetadata();
+      const message = createMetadataMessage(metadata);
+      console.log(`[PinsonBotWS] Sending metadata: ${JSON.stringify(metadata).substring(0, 200)}...`);
+      return this.sendMessage(message);
+    } catch (error) {
+      console.error("[PinsonBotWS] Failed to send metadata:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Send heartbeat with updated metadata
+   */
+  sendHeartbeat(): boolean {
+    try {
+      const metadata = collectMetadata();
+      const message = createHeartbeatMessage(metadata);
+      return this.sendMessage(message);
+    } catch (error) {
+      console.error("[PinsonBotWS] Failed to send heartbeat:", error);
+      return false;
+    }
   }
 
   /**
