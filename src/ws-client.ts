@@ -386,6 +386,7 @@ export class PinsonBotWSClient extends EventEmitter {
         // - New: pinsonbot:{lobster_id}:{user_role}:{user_id}[:group:...]
         // - Old: pinsonbot:{lobster_id}:group:{group_id}:{session_type}:{extra_id}
         // - Old: pinsonbot:{lobster_id}:default
+        // user_role 只有两种：owner | guest
         let userId = innerData?.user_id || innerData?.userId || "";
         let userRole = innerData?.user_role || innerData?.userRole || "";
         
@@ -396,8 +397,8 @@ export class PinsonBotWSClient extends EventEmitter {
             // Check if it's old group format: pinsonbot:lobster_id:group:...
             if (parts[2] === 'group') {
               // Old format: no user_role info, use fallback
-              // For backward compatibility, treat as admin
-              userRole = userRole || "admin";
+              // For backward compatibility, treat as admin (owner)
+              userRole = userRole || "owner";
               // userId might be in parts[5] if format is :group:X:user:USER_ID
               if (parts[4] === 'user' && parts[5]) {
                 userId = userId || parts[5];
@@ -406,10 +407,11 @@ export class PinsonBotWSClient extends EventEmitter {
               }
             } else if (parts[2] === 'default') {
               // Old single chat format: pinsonbot:lobster_id:default
-              userRole = userRole || "admin";
+              userRole = userRole || "owner";
             } else {
               // New format: pinsonbot:lobster_id:user_role:user_id[:group:...]
-              userRole = userRole || parts[2] || "";
+              // user_role: owner | guest
+              userRole = userRole || parts[2] || "guest";
               userId = userId || parts[3] || "";
             }
           }

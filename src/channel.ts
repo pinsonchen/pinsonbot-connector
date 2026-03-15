@@ -112,12 +112,14 @@ const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
     /^pinsonbot:\d+:group:\d+:user:\d+$/,  // pinsonbot:8:group:1:user:123
     /^pinsonbot:\d+:group:\d+/,  // pinsonbot:8:group:1:* （所有旧群聊格式）
     // ============ 新格式 ============
+    // user_role 只有两种：owner | guest
+    // owner → admin, guest → user
     // 单聊新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
-    /^pinsonbot:\d+:(owner|admin):\d+$/,  // pinsonbot:8:owner:123
-    /^pinsonbot:\d+:(owner|admin):[^:]+$/,  // pinsonbot:8:owner:any_id
+    /^pinsonbot:\d+:owner:\d+$/,  // pinsonbot:8:owner:123 → admin
+    /^pinsonbot:\d+:owner:[^:]+$/,  // pinsonbot:8:owner:any_id → admin
     // 群聊新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}:group:{group_id}:...
-    /^pinsonbot:\d+:(owner|admin):\d+:group:/,  // pinsonbot:8:owner:123:group:1:user:123
-    /^pinsonbot:\d+:(owner|admin):[^:]+:group:/,  // pinsonbot:8:owner:any_id:group:...
+    /^pinsonbot:\d+:owner:\d+:group:/,  // pinsonbot:8:owner:123:group:1:user:123 → admin
+    /^pinsonbot:\d+:owner:[^:]+:group:/,  // pinsonbot:8:owner:any_id:group:... → admin
   ],
   adminAgentId: "admin",
   userAgentId: "user",
@@ -560,15 +562,16 @@ async function handleInboundMessage(
   );
 
   // ============ Security Isolation: Identify Role ============
-  // NEW: Determine role based on user_role only
-  // user_role: owner|admin|member|guest
+  // user_role 只有两种状态：owner | guest
+  // - owner: 用户是 lobster_id 的主人 → admin 权限
+  // - guest: 其他所有情况 → user 权限
   let role: "admin" | "user" = "user";
   let targetAgentId = "user";
   
-  if (userRole === "owner" || userRole === "admin") {
+  if (userRole === "owner") {
     role = "admin";
     targetAgentId = "admin";
-  } else if (userRole === "member" || userRole === "guest") {
+  } else if (userRole === "guest") {
     role = "user";
     targetAgentId = "user";
   } else {
