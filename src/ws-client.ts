@@ -10,7 +10,7 @@
 
 import WebSocket from "ws";
 import { EventEmitter } from "events";
-import type { PinsonBotMessage } from "./types.js";
+import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig } from "./types.js";
 import { collectMetadata, createMetadataMessage, createHeartbeatMessage } from "./metadata.js";
 
 interface WSMessage {
@@ -23,6 +23,12 @@ interface QueuedMessage {
   message: WSMessage;
   timestamp: number;
   retryCount: number;
+}
+
+interface PendingSync {
+  sessionId: string;
+  messages: HistoryMessage[];
+  lastSync: number;
 }
 
 export class PinsonBotWSClient extends EventEmitter {
@@ -38,10 +44,15 @@ export class PinsonBotWSClient extends EventEmitter {
   private messageQueue: QueuedMessage[] = [];
   private healthCheckInterval?: NodeJS.Timeout;
   private lastPongTime?: number;
-  private conversationHistory: Map<string, Array<{role: string; content: string; timestamp: string}>> = new Map();
+  private conversationHistory: Map<string, HistoryMessage[]> = new Map();
   private maxHistoryLength: number = 100;
   private platformRecoveryInterval?: NodeJS.Timeout;
   private isManualDisconnect: boolean = false;
+  
+  // History sync
+  private historySyncConfig: HistorySyncConfig;
+  private pendingSync: Map<string, PendingSync> = new Map();
+  private batchSyncInterval?: NodeJS.Timeout;
 
   constructor(
     lobsterId: string,
@@ -51,6 +62,7 @@ export class PinsonBotWSClient extends EventEmitter {
       maxReconnectAttempts?: number;
       reconnectDelay?: number;
       reconnectBackoff?: number;
+      historySync?: Partial<HistorySyncConfig>;
     } = {}
   ) {
     super();
@@ -63,12 +75,25 @@ export class PinsonBotWSClient extends EventEmitter {
     this.maxReconnectAttempts = options.maxReconnectAttempts || Infinity;
     this.reconnectDelay = options.reconnectDelay || 5000;
     this.reconnectBackoff = options.reconnectBackoff || 2;
+    
+    // History sync config
+    this.historySyncConfig = {
+      enabled: options.historySync?.enabled ?? true,
+      mode: options.historySync?.mode ?? "realtime",
+      batchIntervalMs: options.historySync?.batchIntervalMs ?? 5000,
+      maxCacheSize: options.historySync?.maxCacheSize ?? 1000,
+    };
 
     // Build WebSocket URL with authentication
     const url = new URL(endpoint);
     url.searchParams.append("token", this.internalToken);
     url.searchParams.append("lobster_id", this.lobsterId);
     this.endpoint = url.toString();
+    
+    // Start batch sync timer if needed
+    if (this.historySyncConfig.enabled && this.historySyncConfig.mode === "batch") {
+      this.startBatchSync();
+    }
   }
 
   /**
@@ -155,6 +180,7 @@ export class PinsonBotWSClient extends EventEmitter {
     this.isManualDisconnect = true;
     this.stopHealthCheck();
     this.stopPlatformRecoveryCheck();
+    this.stopBatchSync();
 
     if (this.ws) {
       this.ws.close(1000, "Client disconnect");
@@ -290,6 +316,9 @@ export class PinsonBotWSClient extends EventEmitter {
     queueLength: number;
     reconnectAttempts: number;
     historySessions: number;
+    historySyncEnabled: boolean;
+    historySyncMode: string;
+    pendingSyncCount: number;
   } {
     return {
       connected: this.isConnected(),
@@ -297,6 +326,9 @@ export class PinsonBotWSClient extends EventEmitter {
       queueLength: this.messageQueue.length,
       reconnectAttempts: this.reconnectAttempts,
       historySessions: this.conversationHistory.size,
+      historySyncEnabled: this.historySyncConfig.enabled,
+      historySyncMode: this.historySyncConfig.mode,
+      pendingSyncCount: this.pendingSync.size,
     };
   }
 
@@ -331,23 +363,141 @@ export class PinsonBotWSClient extends EventEmitter {
   }
 
   /**
-   * Store message in conversation history
+   * Store message in conversation history and sync to platform
    */
-  private storeMessage(sessionId: string, role: "user" | "assistant", content: string): void {
+  private storeMessage(sessionId: string, role: "user" | "assistant", content: string, conversationId?: number): void {
     if (!this.conversationHistory.has(sessionId)) {
       this.conversationHistory.set(sessionId, []);
     }
     
     const history = this.conversationHistory.get(sessionId)!;
-    history.push({
+    const msg: HistoryMessage = {
       role,
       content,
       timestamp: new Date().toISOString(),
-    });
+      conversation_id: conversationId,
+    };
+    history.push(msg);
     
     // Limit history length
     if (history.length > this.maxHistoryLength) {
       history.shift();
+    }
+    
+    // Sync to platform if enabled
+    if (this.historySyncConfig.enabled) {
+      if (this.historySyncConfig.mode === "realtime") {
+        // Real-time sync: send immediately
+        this.pushHistoryToPlatform(sessionId, [msg]);
+      } else {
+        // Batch sync: add to pending queue
+        this.addToPendingSync(sessionId, msg);
+      }
+    }
+  }
+
+  /**
+   * Add message to pending sync queue (for batch mode)
+   */
+  private addToPendingSync(sessionId: string, msg: HistoryMessage): void {
+    if (!this.pendingSync.has(sessionId)) {
+      this.pendingSync.set(sessionId, {
+        sessionId,
+        messages: [],
+        lastSync: Date.now(),
+      });
+    }
+    
+    const pending = this.pendingSync.get(sessionId)!;
+    pending.messages.push(msg);
+    
+    // Limit pending size
+    if (pending.messages.length > (this.historySyncConfig.maxCacheSize || 1000)) {
+      pending.messages.shift();
+    }
+  }
+
+  /**
+   * Push history to platform
+   */
+  private pushHistoryToPlatform(sessionId: string, messages: HistoryMessage[]): boolean {
+    if (!this.connected) {
+      console.log("[PinsonBotWS] Cannot push history: not connected");
+      return false;
+    }
+    
+    const success = this.sendMessage({
+      type: "history_sync",
+      data: {
+        session_id: sessionId,
+        lobster_id: this.lobsterId,
+        messages,
+        timestamp: new Date().toISOString(),
+      },
+    });
+    
+    if (success) {
+      this.emit("history_sync", { sessionId, success: true, count: messages.length });
+    }
+    
+    return success;
+  }
+
+  /**
+   * Start batch sync timer
+   */
+  private startBatchSync(): void {
+    if (this.batchSyncInterval) {
+      this.stopBatchSync();
+    }
+    
+    const interval = this.historySyncConfig.batchIntervalMs || 5000;
+    this.batchSyncInterval = setInterval(() => {
+      this.flushPendingSync();
+    }, interval);
+    
+    console.log(`[PinsonBotWS] Batch sync started (interval: ${interval}ms)`);
+  }
+
+  /**
+   * Stop batch sync timer
+   */
+  private stopBatchSync(): void {
+    if (this.batchSyncInterval) {
+      // Flush remaining before stopping
+      this.flushPendingSync();
+      clearInterval(this.batchSyncInterval);
+      this.batchSyncInterval = undefined;
+      console.log("[PinsonBotWS] Batch sync stopped");
+    }
+  }
+
+  /**
+   * Flush pending sync messages to platform
+   */
+  private flushPendingSync(): void {
+    if (!this.connected || this.pendingSync.size === 0) {
+      return;
+    }
+    
+    for (const [sessionId, pending] of this.pendingSync) {
+      if (pending.messages.length > 0) {
+        const success = this.pushHistoryToPlatform(sessionId, pending.messages);
+        if (success) {
+          pending.messages = [];
+          pending.lastSync = Date.now();
+        }
+      }
+    }
+  }
+
+  /**
+   * Import history from platform (for recovery)
+   */
+  importHistory(sessionId: string, messages: HistoryMessage[]): void {
+    if (messages && messages.length > 0) {
+      this.conversationHistory.set(sessionId, messages);
+      console.log(`[PinsonBotWS] Imported ${messages.length} messages for session ${sessionId}`);
     }
   }
 
@@ -379,9 +529,16 @@ export class PinsonBotWSClient extends EventEmitter {
   /**
    * Get conversation history for a session
    */
-  getHistory(sessionId: string, limit?: number): Array<{role: string; content: string; timestamp: string}> {
+  getHistory(sessionId: string, limit?: number): HistoryMessage[] {
     const history = this.conversationHistory.get(sessionId) || [];
-    return limit ? history.slice(-limit) : history;
+    return limit ? history.slice(-limit) : [...history];
+  }
+
+  /**
+   * Get all conversation histories
+   */
+  getAllHistories(): Map<string, HistoryMessage[]> {
+    return new Map(this.conversationHistory);
   }
 
   /**
@@ -390,8 +547,10 @@ export class PinsonBotWSClient extends EventEmitter {
   clearHistory(sessionId?: string): void {
     if (sessionId) {
       this.conversationHistory.delete(sessionId);
+      this.pendingSync.delete(sessionId);
     } else {
       this.conversationHistory.clear();
+      this.pendingSync.clear();
     }
   }
 
@@ -478,6 +637,19 @@ export class PinsonBotWSClient extends EventEmitter {
         // Platform requests conversation history
         console.log(`[PinsonBotWS] History request for session: ${message.data?.session_id}`);
         this.handleHistoryRequest(message.data);
+        break;
+
+      case "history_import":
+        // Platform sends history for import (e.g., after restart)
+        if (message.data?.session_id && message.data?.messages) {
+          this.importHistory(message.data.session_id, message.data.messages);
+          console.log(`[PinsonBotWS] Imported history for session: ${message.data.session_id}`);
+        }
+        break;
+
+      case "history_sync_ack":
+        // Platform acknowledged history sync
+        console.log(`[PinsonBotWS] History sync acknowledged: ${message.data?.session_id}`);
         break;
 
       case "error":

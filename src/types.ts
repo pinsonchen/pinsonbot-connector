@@ -125,6 +125,27 @@ export interface WSClientEvents {
     timestamp?: string; 
   };
   history: { sessionId: string; messages: any[] };
+  history_sync: { sessionId: string; success: boolean; count: number };
   error: { type: string; error: Error };
   server_error: any;
+}
+
+// ============ History Sync Types ============
+
+export interface HistoryMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  conversation_id?: number;
+}
+
+export interface HistorySyncConfig {
+  /** 是否启用历史同步到平台 */
+  enabled: boolean;
+  /** 同步模式: "realtime" 实时同步 | "batch" 批量同步 */
+  mode: "realtime" | "batch";
+  /** 批量同步间隔（毫秒），mode=batch 时有效 */
+  batchIntervalMs?: number;
+  /** 最大缓存条数 */
+  maxCacheSize?: number;
 }
