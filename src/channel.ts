@@ -66,6 +66,7 @@ import type {
   GatewayStartContext,
   GatewayStopResult,
   ResolvedAccount,
+  TokenUsage,
 } from "./types.js";
 
 // In-flight processing guard (memory-only, complementary to dedup)
@@ -641,6 +642,7 @@ async function handleInboundMessage(
     }
 
     let fullResponse = "";
+    let lastUsage: { input?: number; output?: number; totalTokens?: number; model?: string; provider?: string } = {};
 
     // Use OpenClaw's reply dispatcher for AI response
     // Security Isolation: Pass role and target agent in context
@@ -673,6 +675,24 @@ async function handleInboundMessage(
             fullResponse += text;
             client.sendStreamToken(text, sessionId);
           }
+          // 捕获 usage 数据（如果 payload 中包含）
+          if ((payload as any).usage) {
+            const u = (payload as any).usage;
+            lastUsage = {
+              input: u.input || u.input_tokens,
+              output: u.output || u.output_tokens,
+              totalTokens: u.total || u.totalTokens,
+              model: (payload as any).model,
+              provider: (payload as any).provider,
+            };
+          }
+        },
+      },
+      replyOptions: {
+        // 在模型选择时捕获模型信息
+        onModelSelected: (modelCtx: { provider: string; model: string; thinkLevel?: string }) => {
+          lastUsage.model = modelCtx.model;
+          lastUsage.provider = modelCtx.provider;
         },
       },
     });
@@ -685,6 +705,22 @@ async function handleInboundMessage(
     // Send final complete message (for persistence)
     if (fullResponse) {
       client.sendAssistantResponse(fullResponse, sessionId, conversationId);
+    }
+
+    // ============ Send Token Usage to Platform ============
+    // 发送当次会话的 token 使用数据
+    if (lastUsage.input || lastUsage.output || lastUsage.totalTokens) {
+      const tokenUsage: TokenUsage = {
+        input_tokens: lastUsage.input,
+        output_tokens: lastUsage.output,
+        total_tokens: lastUsage.totalTokens,
+        model: lastUsage.model,
+        provider: lastUsage.provider,
+      };
+      client.sendTokenUsage(sessionId, tokenUsage);
+      ctx.log?.info?.(
+        `[${account.accountId}] Token usage sent: input=${tokenUsage.input_tokens}, output=${tokenUsage.output_tokens}, model=${tokenUsage.model}`
+      );
     }
 
     ctx.log?.info?.(

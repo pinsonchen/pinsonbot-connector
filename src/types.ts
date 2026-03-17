@@ -149,3 +149,47 @@ export interface HistorySyncConfig {
   /** 最大缓存条数 */
   maxCacheSize?: number;
 }
+
+// ============ Token Usage Types ============
+
+/**
+ * Token 使用数据
+ * 从 OpenClaw DiagnosticUsageEvent 提取
+ */
+export interface TokenUsage {
+  /** 输入 token 数 */
+  input_tokens?: number;
+  /** 输出 token 数 */
+  output_tokens?: number;
+  /** 缓存读取 token 数 */
+  cache_read_tokens?: number;
+  /** 缓存写入 token 数 */
+  cache_write_tokens?: number;
+  /** 总 token 数 */
+  total_tokens?: number;
+  /** 模型名称 */
+  model?: string;
+  /** 提供商名称 */
+  provider?: string;
+  /** 费用（美元） */
+  cost_usd?: number;
+  /** 响应时间（毫秒） */
+  duration_ms?: number;
+  /** 上下文限制 */
+  context_limit?: number;
+  /** 上下文已使用 */
+  context_used?: number;
+}
+
+/**
+ * Token 使用同步消息
+ */
+export interface TokenUsageMessage {
+  type: "token_usage";
+  data: {
+    session_id: string;
+    lobster_id: string;
+    usage: TokenUsage;
+    timestamp: string;
+  };
+}

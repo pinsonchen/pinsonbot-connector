@@ -10,7 +10,7 @@
 
 import WebSocket from "ws";
 import { EventEmitter } from "events";
-import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig } from "./types.js";
+import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage } from "./types.js";
 import { collectMetadata, createMetadataMessage, createHeartbeatMessage } from "./metadata.js";
 
 interface WSMessage {
@@ -272,6 +272,22 @@ export class PinsonBotWSClient extends EventEmitter {
         lobster_id: this.lobsterId,
       },
       timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Send token usage to platform
+   * 同步当次会话的 token 使用数据
+   */
+  sendTokenUsage(sessionId: string, usage: TokenUsage): boolean {
+    return this.sendMessage({
+      type: "token_usage",
+      data: {
+        session_id: sessionId,
+        lobster_id: this.lobsterId,
+        usage,
+        timestamp: new Date().toISOString(),
+      },
     });
   }
 
