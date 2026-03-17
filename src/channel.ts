@@ -67,6 +67,7 @@ import type {
   GatewayStopResult,
   ResolvedAccount,
   TokenUsage,
+  ApiCallStats,
 } from "./types.js";
 
 // In-flight processing guard (memory-only, complementary to dedup)
@@ -708,7 +709,7 @@ async function handleInboundMessage(
     }
 
     // ============ Send Token Usage to Platform ============
-    // 发送当次会话的 token 使用数据
+    // 发送当次会话的 token 使用数据和 API 调用次数
     if (lastUsage.input || lastUsage.output || lastUsage.totalTokens) {
       const tokenUsage: TokenUsage = {
         input_tokens: lastUsage.input,
@@ -720,6 +721,19 @@ async function handleInboundMessage(
       client.sendTokenUsage(sessionId, tokenUsage);
       ctx.log?.info?.(
         `[${account.accountId}] Token usage sent: input=${tokenUsage.input_tokens}, output=${tokenUsage.output_tokens}, model=${tokenUsage.model}`
+      );
+    }
+    
+    // 发送 API 调用统计（用于不支持 token usage 的模型，如百炼 Coding Plan）
+    if (lastUsage.model || lastUsage.provider) {
+      const apiCallStats: ApiCallStats = {
+        call_count: 1, // 每次 dispatchReply 调用 = 1 次 API 调用
+        model: lastUsage.model,
+        provider: lastUsage.provider,
+      };
+      client.sendApiCall(sessionId, apiCallStats);
+      ctx.log?.info?.(
+        `[${account.accountId}] API call stats sent: model=${apiCallStats.model}, provider=${apiCallStats.provider}`
       );
     }
 

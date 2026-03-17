@@ -182,6 +182,19 @@ export interface TokenUsage {
 }
 
 /**
+ * API 调用统计
+ * 用于不支持 token usage 的模型（如百炼 Coding Plan）
+ */
+export interface ApiCallStats {
+  /** 本次会话 API 调用次数 */
+  call_count: number;
+  /** 模型名称 */
+  model?: string;
+  /** 提供商名称 */
+  provider?: string;
+}
+
+/**
  * Token 使用同步消息
  */
 export interface TokenUsageMessage {
@@ -190,6 +203,19 @@ export interface TokenUsageMessage {
     session_id: string;
     lobster_id: string;
     usage: TokenUsage;
+    timestamp: string;
+  };
+}
+
+/**
+ * API 调用统计消息
+ */
+export interface ApiCallMessage {
+  type: "api_call";
+  data: {
+    session_id: string;
+    lobster_id: string;
+    stats: ApiCallStats;
     timestamp: string;
   };
 }

@@ -10,7 +10,7 @@
 
 import WebSocket from "ws";
 import { EventEmitter } from "events";
-import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage } from "./types.js";
+import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage, ApiCallStats } from "./types.js";
 import { collectMetadata, createMetadataMessage, createHeartbeatMessage } from "./metadata.js";
 
 interface WSMessage {
@@ -286,6 +286,22 @@ export class PinsonBotWSClient extends EventEmitter {
         session_id: sessionId,
         lobster_id: this.lobsterId,
         usage,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  /**
+   * Send API call stats to platform
+   * 同步当次会话的 API 调用次数（用于不支持 token usage 的模型）
+   */
+  sendApiCall(sessionId: string, stats: ApiCallStats): boolean {
+    return this.sendMessage({
+      type: "api_call",
+      data: {
+        session_id: sessionId,
+        lobster_id: this.lobsterId,
+        stats,
         timestamp: new Date().toISOString(),
       },
     });
