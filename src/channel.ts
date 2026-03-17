@@ -709,6 +709,9 @@ async function handleInboundMessage(
     }
 
     // ============ Send Token Usage to Platform ============
+    // 从 result.counts 获取实际的 API 调用次数
+    const apiCallCount = result?.counts?.final || 1;
+    
     // 发送当次会话的 token 使用数据和 API 调用次数
     if (lastUsage.input || lastUsage.output || lastUsage.totalTokens) {
       const tokenUsage: TokenUsage = {
@@ -727,13 +730,13 @@ async function handleInboundMessage(
     // 发送 API 调用统计（用于不支持 token usage 的模型，如百炼 Coding Plan）
     if (lastUsage.model || lastUsage.provider) {
       const apiCallStats: ApiCallStats = {
-        call_count: 1, // 每次 dispatchReply 调用 = 1 次 API 调用
+        call_count: apiCallCount, // 从 dispatchReply result 获取实际调用次数
         model: lastUsage.model,
         provider: lastUsage.provider,
       };
       client.sendApiCall(sessionId, apiCallStats);
       ctx.log?.info?.(
-        `[${account.accountId}] API call stats sent: model=${apiCallStats.model}, provider=${apiCallStats.provider}`
+        `[${account.accountId}] API call stats sent: count=${apiCallCount}, model=${apiCallStats.model}, provider=${apiCallStats.provider}`
       );
     }
 
