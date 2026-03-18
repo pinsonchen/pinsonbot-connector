@@ -81,6 +81,76 @@ export interface GatewayStopResult {
 export type ChannelLogSink = SDKChannelLogSink;
 export type ChannelAccountSnapshot = SDKChannelAccountSnapshot;
 
+// ============ ACP Standard Media Types ============
+
+/**
+ * Image content following AgentClientProtocol standard
+ * @see https://agentclientprotocol.com
+ * 
+ * Re-export from @mariozechner/pi-ai for OpenClaw compatibility
+ */
+export type { ImageContent } from "@mariozechner/pi-ai";
+
+/**
+ * Helper function to create ImageContent
+ */
+export function createImageContent(data: string, mimeType: string): import("@mariozechner/pi-ai").ImageContent {
+  return { type: "image", data, mimeType };
+}
+
+/**
+ * Audio content following AgentClientProtocol standard
+ */
+export interface AudioContent {
+  /** Base64 encoded audio data */
+  data: string;
+  /** MIME type: "audio/mp3" | "audio/wav" | "audio/ogg" | "audio/m4a" | etc. */
+  mimeType: string;
+  /** Optional annotations */
+  annotations?: {
+    audience?: string[];
+    lastModified?: string;
+    priority?: number;
+  } | null;
+}
+
+/**
+ * Video content following AgentClientProtocol standard
+ */
+export interface VideoContent {
+  /** Base64 encoded video data or URL */
+  data?: string;
+  /** MIME type: "video/mp4" | "video/webm" | etc. */
+  mimeType: string;
+  /** URL to video (alternative to data) */
+  uri?: string | null;
+  /** Optional annotations */
+  annotations?: {
+    audience?: string[];
+    lastModified?: string;
+    priority?: number;
+  } | null;
+}
+
+/**
+ * Union type for all media content types
+ */
+export type MediaContent = import("@mariozechner/pi-ai").ImageContent | AudioContent | VideoContent;
+
+/**
+ * Attachment for message sending (ACP compatible)
+ */
+export interface MessageAttachment {
+  /** Content type discriminator */
+  type: "image" | "audio" | "video";
+  /** Media data */
+  data: string;
+  /** MIME type */
+  mimeType: string;
+  /** Optional URI */
+  uri?: string | null;
+}
+
 // ============ PinsonBots Protocol ============
 
 export interface PinsonBotMessage {
@@ -89,9 +159,14 @@ export interface PinsonBotMessage {
     content?: string;
     session_id?: string;
     user_id?: string;      // 用户ID
-    user_role?: string;    // 用户角色 (owner|admin|member|guest)
+    user_role?: string;    // 用户角色 (owner|guest)
     role?: string;
     messages?: any[];
+    /** Media attachments (ACP standard) */
+    images?: import("@mariozechner/pi-ai").ImageContent[];
+    audio?: AudioContent[];
+    video?: VideoContent[];
+    attachments?: MessageAttachment[];
     [key: string]: any;
   };
   timestamp?: string;
@@ -108,6 +183,11 @@ export interface PinsonBotInboundMessage {
     conversation_id?: number;
     role?: string;
     messages?: any[];
+    /** Media attachments (ACP standard) */
+    images?: import("@mariozechner/pi-ai").ImageContent[];
+    audio?: AudioContent[];
+    video?: VideoContent[];
+    attachments?: MessageAttachment[];
   };
   timestamp?: string;
 }
@@ -122,7 +202,12 @@ export interface WSClientEvents {
     sessionId: string; 
     userId?: string;       // 用户ID
     userRole?: string;     // 用户角色
-    timestamp?: string; 
+    timestamp?: string;
+    /** Media attachments (ACP standard) */
+    images?: import("@mariozechner/pi-ai").ImageContent[];
+    audio?: AudioContent[];
+    video?: VideoContent[];
+    attachments?: MessageAttachment[];
   };
   history: { sessionId: string; messages: any[] };
   history_sync: { sessionId: string; success: boolean; count: number };

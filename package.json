@@ -1,7 +1,7 @@
 {
   "name": "pinsonbot",
-  "version": "2.11.0",
-  "description": "OpenClaw Channel Plugin for PinsonBots Platform integration with auto-update",
+  "version": "2.13.0",
+  "description": "OpenClaw Channel Plugin for PinsonBots Platform integration with auto-update, multimedia support, and security protection",
   "main": "index.ts",
   "type": "module",
   "scripts": {
@@ -21,7 +21,9 @@
     "chatbot",
     "plugin",
     "channel",
-    "auto-update"
+    "auto-update",
+    "multimedia",
+    "vision"
   ],
   "author": "PinsonBots Team",
   "license": "MIT",

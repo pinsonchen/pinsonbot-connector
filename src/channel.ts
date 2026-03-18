@@ -68,7 +68,12 @@ import type {
   ResolvedAccount,
   TokenUsage,
   ApiCallStats,
+  AudioContent,
+  VideoContent,
+  MessageAttachment,
 } from "./types.js";
+import { createImageContent } from "./types.js";
+import type { ImageContent } from "@mariozechner/pi-ai";
 
 // In-flight processing guard (memory-only, complementary to dedup)
 const INFLIGHT_TTL_MS = 5 * 60 * 1000;
@@ -146,6 +151,184 @@ function getTargetAgentId(sessionKey: string, config: SecurityConfig = DEFAULT_S
  */
 function getSessionRole(sessionKey: string, config: SecurityConfig = DEFAULT_SECURITY_CONFIG): "admin" | "user" {
   return isAdminSession(sessionKey, config) ? "admin" : "user";
+}
+
+// ============ API Key Security Protection ============
+
+/**
+ * 敏感信息模式列表
+ * 用于检测和过滤 AI 响应中的敏感信息
+ */
+const SENSITIVE_PATTERNS: Array<{
+  pattern: RegExp;
+  replacement: string;
+  description: string;
+}> = [
+  // ============ API Keys ============
+  // OpenAI API Key (sk-xxx)
+  {
+    pattern: /sk-[a-zA-Z0-9]{20,}/g,
+    replacement: "[API_KEY_REDACTED]",
+    description: "OpenAI API Key"
+  },
+  // Anthropic API Key (sk-ant-xxx)
+  {
+    pattern: /sk-ant-[a-zA-Z0-9-]{20,}/g,
+    replacement: "[API_KEY_REDACTED]",
+    description: "Anthropic API Key"
+  },
+  // 阿里云百炼 API Key (sk-sp-xxx, sk-xxx)
+  {
+    pattern: /sk-[a-zA-Z]{0,10}-[a-zA-Z0-9]{20,}/g,
+    replacement: "[API_KEY_REDACTED]",
+    description: "Bailian/Aliyun API Key"
+  },
+  // Generic sk- prefix keys (catch-all for any sk- format)
+  {
+    pattern: /sk-[a-zA-Z0-9-]{30,}/g,
+    replacement: "[API_KEY_REDACTED]",
+    description: "Generic sk- API Key"
+  },
+  // Google API Key (AIza-xxx)
+  {
+    pattern: /AIza[a-zA-Z0-9_-]{35}/g,
+    replacement: "[API_KEY_REDACTED]",
+    description: "Google API Key"
+  },
+  // Azure API Key
+  {
+    pattern: /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,
+    replacement: "[API_KEY_REDACTED]",
+    description: "Azure API Key/UUID"
+  },
+  // DeepSeek API Key (sk-xxx)
+  {
+    pattern: /sk-[a-f0-9]{32,}/gi,
+    replacement: "[API_KEY_REDACTED]",
+    description: "DeepSeek API Key"
+  },
+  // Generic API Keys in quotes (捕获更多格式)
+  {
+    pattern: /['"`]([a-zA-Z0-9_-]{32,})['"`]/g,
+    replacement: "'[API_KEY_REDACTED]'",
+    description: "Generic API Key in quotes"
+  },
+  // Generic API Keys (common formats)
+  {
+    pattern: /\b[aA][pP][iI][-_]?[kK][eE][yY][-_]?\s*[=:]\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/g,
+    replacement: "[API_KEY_REDACTED]",
+    description: "Generic API Key"
+  },
+  // ============ Tokens ============
+  // Bearer tokens
+  {
+    pattern: /Bearer\s+[a-zA-Z0-9_-]{20,}/g,
+    replacement: "Bearer [TOKEN_REDACTED]",
+    description: "Bearer Token"
+  },
+  // JWT tokens
+  {
+    pattern: /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g,
+    replacement: "[JWT_REDACTED]",
+    description: "JWT Token"
+  },
+  // Database connection strings
+  {
+    pattern: /postgres(ql)?:\/\/[^:]+:[^@]+@[^\s]+/g,
+    replacement: "[DB_CONNECTION_REDACTED]",
+    description: "PostgreSQL Connection String"
+  },
+  {
+    pattern: /mysql:\/\/[^:]+:[^@]+@[^\s]+/g,
+    replacement: "[DB_CONNECTION_REDACTED]",
+    description: "MySQL Connection String"
+  },
+  {
+    pattern: /mongodb(\+srv)?:\/\/[^:]+:[^@]+@[^\s]+/g,
+    replacement: "[DB_CONNECTION_REDACTED]",
+    description: "MongoDB Connection String"
+  },
+  // Redis connection strings
+  {
+    pattern: /redis:\/\/[^:]*:[^@]+@[^\s]+/g,
+    replacement: "[REDIS_REDACTED]",
+    description: "Redis Connection String"
+  },
+  // AWS Access Keys
+  {
+    pattern: /AKIA[A-Z0-9]{16}/g,
+    replacement: "[AWS_KEY_REDACTED]",
+    description: "AWS Access Key"
+  },
+  // Generic secrets in config format
+  {
+    pattern: /['"](sk-[a-zA-Z0-9]{20,})['"]/g,
+    replacement: '"[SECRET_REDACTED]"',
+    description: "Secret in quotes"
+  },
+  // Environment variable patterns
+  {
+    pattern: /OPENAI_API_KEY\s*=\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/gi,
+    replacement: "OPENAI_API_KEY=[REDACTED]",
+    description: "OpenAI API Key env"
+  },
+  {
+    pattern: /ANTHROPIC_API_KEY\s*=\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/gi,
+    replacement: "ANTHROPIC_API_KEY=[REDACTED]",
+    description: "Anthropic API Key env"
+  },
+  {
+    pattern: /API_KEY\s*=\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/gi,
+    replacement: "API_KEY=[REDACTED]",
+    description: "Generic API Key env"
+  },
+];
+
+/**
+ * 过滤敏感信息
+ * 从文本中移除所有敏感信息模式
+ * 
+ * @param text 原始文本
+ * @returns 过滤后的安全文本
+ */
+function sanitizeResponse(text: string): string {
+  if (!text) return text;
+  
+  let sanitized = text;
+  
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+  
+  return sanitized;
+}
+
+/**
+ * 检查文本是否包含敏感信息
+ * 用于日志警告
+ * 
+ * @param text 要检查的文本
+ * @returns 是否包含敏感信息
+ */
+function containsSensitiveInfo(text: string): boolean {
+  if (!text) return false;
+  
+  for (const { pattern } of SENSITIVE_PATTERNS) {
+    if (pattern.test(text)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * 安全日志输出
+ * 确保日志中不包含敏感信息
+ */
+function safeLog(logFn: (...args: any[]) => void, prefix: string, text: string, maxLength: number = 100): void {
+  const safeText = sanitizeResponse(text.substring(0, maxLength));
+  logFn(`${prefix}${safeText}${text.length > maxLength ? "..." : ""}`);
 }
 
 function getInboundCounters(accountId: string) {
@@ -424,16 +607,24 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         sessionId, 
         conversationId,
         userId,
-        userRole
+        userRole,
+        images,
+        audio,
+        video,
+        attachments,
       }: { 
         content: string; 
         sessionId: string; 
         conversationId?: number;
         userId?: string;
         userRole?: string;
+        images?: ImageContent[];
+        audio?: AudioContent[];
+        video?: VideoContent[];
+        attachments?: MessageAttachment[];
       }) => {
         await handleInboundMessage(
-          { content, sessionId, conversationId, userId, userRole },
+          { content, sessionId, conversationId, userId, userRole, images, audio, video, attachments },
           client,
           ctx,
           account
@@ -540,25 +731,48 @@ async function handleInboundMessage(
     conversationId?: number;
     userId?: string;
     userRole?: string;
+    /** Media attachments (ACP standard) */
+    images?: ImageContent[];
+    audio?: AudioContent[];
+    video?: VideoContent[];
+    attachments?: MessageAttachment[];
   },
   client: PinsonBotWSClient,
   ctx: GatewayStartContext,
   account: ResolvedAccount
 ): Promise<void> {
-  const { content, sessionId, conversationId, userId, userRole } = message;
+  const { content, sessionId, conversationId, userId, userRole, images, audio, video, attachments } = message;
 
   // Debug: log the full message structure
-  ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify(message)}`);
+  ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify({
+    content: content?.substring(0, 100),
+    sessionId,
+    conversationId,
+    userId,
+    userRole,
+    images: images?.length || 0,
+    audio: audio?.length || 0,
+    video: video?.length || 0,
+    attachments: attachments?.length || 0,
+  })}`);
 
   const stats = getInboundCounters(account.accountId);
   stats.received += 1;
 
   // Safety check for undefined content
   const safeContent = content || "";
+  
+  // Log message with media info
+  const mediaInfo: string[] = [];
+  if (images?.length) mediaInfo.push(`${images.length} image(s)`);
+  if (audio?.length) mediaInfo.push(`${audio.length} audio(s)`);
+  if (video?.length) mediaInfo.push(`${video.length} video(s)`);
+  if (attachments?.length) mediaInfo.push(`${attachments.length} attachment(s)`);
+  
   ctx.log?.info?.(
     `[${account.accountId}] User message: ${safeContent.substring(0, 100)}${
       safeContent.length > 100 ? "..." : ""
-    }`
+    }${mediaInfo.length ? ` [Media: ${mediaInfo.join(', ')}]` : ''}`
   );
 
   // ============ Security Isolation: Identify Role ============
@@ -645,9 +859,31 @@ async function handleInboundMessage(
     let fullResponse = "";
     let lastUsage: { input?: number; output?: number; totalTokens?: number; model?: string; provider?: string } = {};
 
+    // ============ Prepare Media Attachments for OpenClaw ============
+    // Convert to OpenClaw's GetReplyOptions.images format
+    const replyImages: ImageContent[] = [];
+    
+    // Add explicit images
+    if (images?.length) {
+      replyImages.push(...images);
+    }
+    
+    // Add image-type attachments
+    if (attachments?.length) {
+      for (const att of attachments) {
+        if (att.type === "image") {
+          replyImages.push(createImageContent(att.data, att.mimeType));
+        }
+      }
+    }
+    
+    if (replyImages.length > 0) {
+      ctx.log?.info?.(`[${account.accountId}] Passing ${replyImages.length} image(s) to OpenClaw AI`);
+    }
+
     // Use OpenClaw's reply dispatcher for AI response
     // Security Isolation: Pass role and target agent in context
-    ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher (role=${role}, agent=${targetAgentId})...`);
+    ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher (role=${role}, agent=${targetAgentId}, images=${replyImages.length})...`);
     
     const result = await ctx.channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: {
@@ -670,8 +906,16 @@ async function handleInboundMessage(
       cfg: ctx.cfg,
       dispatcherOptions: {
         deliver: async (payload) => {
-          ctx.log?.info?.(`[${account.accountId}] deliver callback called: ${JSON.stringify(payload).substring(0, 100)}`);
-          const text = payload.text || "";
+          ctx.log?.info?.(`[${account.accountId}] deliver callback called`);
+          let text = payload.text || "";
+          
+          // ============ Security: Sanitize response before sending ============
+          // 流式输出时实时过滤敏感信息
+          if (text && containsSensitiveInfo(text)) {
+            ctx.log?.warn?.(`[${account.accountId}] ⚠️ Detected sensitive info in streaming response, sanitizing...`);
+            text = sanitizeResponse(text);
+          }
+          
           if (text) {
             fullResponse += text;
             client.sendStreamToken(text, sessionId);
@@ -690,6 +934,8 @@ async function handleInboundMessage(
         },
       },
       replyOptions: {
+        // Pass images to OpenClaw (ACP standard)
+        images: replyImages.length > 0 ? replyImages : undefined,
         // 在模型选择时捕获模型信息
         onModelSelected: (modelCtx: { provider: string; model: string; thinkLevel?: string }) => {
           lastUsage.model = modelCtx.model;
@@ -698,13 +944,18 @@ async function handleInboundMessage(
       },
     });
     
-    ctx.log?.info?.(`[${account.accountId}] dispatchReply result: ${JSON.stringify(result).substring(0, 200)}`);
+    ctx.log?.info?.(`[${account.accountId}] dispatchReply result: received`);
 
     // End typing
     client.sendTypingIndicator(sessionId, false);
 
-    // Send final complete message (for persistence)
+    // ============ Security: Final sanitization before sending ============
+    // 最终响应发送前再次过滤敏感信息
     if (fullResponse) {
+      if (containsSensitiveInfo(fullResponse)) {
+        ctx.log?.warn?.(`[${account.accountId}] ⚠️ Detected sensitive info in final response, sanitizing...`);
+        fullResponse = sanitizeResponse(fullResponse);
+      }
       client.sendAssistantResponse(fullResponse, sessionId, conversationId);
     }
 
@@ -740,10 +991,12 @@ async function handleInboundMessage(
       );
     }
 
-    ctx.log?.info?.(
-      `[${account.accountId}] AI response: ${fullResponse.substring(0, 100)}${
-        fullResponse.length > 100 ? "..." : ""
-      }`
+    // Security: 使用安全日志输出，确保日志中不包含敏感信息
+    safeLog(
+      (msg: string) => ctx.log?.info?.(msg),
+      `[${account.accountId}] AI response: `,
+      fullResponse,
+      100
     );
 
     markMessageProcessed(dedupKey);

@@ -10,7 +10,7 @@
 
 import WebSocket from "ws";
 import { EventEmitter } from "events";
-import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage, ApiCallStats } from "./types.js";
+import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage, ApiCallStats, ImageContent, AudioContent, VideoContent, MessageAttachment } from "./types.js";
 import { collectMetadata, createMetadataMessage, createHeartbeatMessage } from "./metadata.js";
 
 interface WSMessage {
@@ -244,6 +244,70 @@ export class PinsonBotWSClient extends EventEmitter {
       data,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Send assistant response with media (ACP standard)
+   * Supports images, audio, video attachments
+   */
+  sendAssistantResponseWithMedia(
+    content: string, 
+    sessionId: string, 
+    media: {
+      images?: ImageContent[];
+      audio?: AudioContent[];
+      video?: VideoContent[];
+      attachments?: MessageAttachment[];
+    },
+    conversationId?: number
+  ): boolean {
+    // Store assistant message in history
+    this.storeMessage(sessionId, "assistant", content);
+    
+    const data: any = {
+      content,
+      session_id: sessionId,
+      role: "assistant",
+      lobster_id: this.lobsterId,
+    };
+    
+    // Add media attachments (ACP standard)
+    if (media.images?.length) {
+      data.images = media.images;
+    }
+    if (media.audio?.length) {
+      data.audio = media.audio;
+    }
+    if (media.video?.length) {
+      data.video = media.video;
+    }
+    if (media.attachments?.length) {
+      data.attachments = media.attachments;
+    }
+    
+    if (conversationId !== undefined) {
+      data.conversation_id = conversationId;
+    }
+    
+    console.log(`[PinsonBotWS] sendAssistantResponseWithMedia: images=${media.images?.length || 0}, audio=${media.audio?.length || 0}, video=${media.video?.length || 0}`);
+    
+    return this.sendMessage({
+      type: "bot_response",
+      data,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Send image response (helper method)
+   */
+  sendImageResponse(
+    content: string, 
+    sessionId: string, 
+    images: ImageContent[], 
+    conversationId?: number
+  ): boolean {
+    return this.sendAssistantResponseWithMedia(content, sessionId, { images }, conversationId);
   }
 
   /**
@@ -642,6 +706,26 @@ export class PinsonBotWSClient extends EventEmitter {
           }
         }
         
+        // Extract media attachments (ACP standard)
+        const images: ImageContent[] | undefined = innerData?.images || undefined;
+        const audio: AudioContent[] | undefined = innerData?.audio || undefined;
+        const video: VideoContent[] | undefined = innerData?.video || undefined;
+        const attachments: MessageAttachment[] | undefined = innerData?.attachments || undefined;
+        
+        // Log media info if present
+        if (images?.length) {
+          console.log(`[PinsonBotWS] Received ${images.length} image(s) with message`);
+        }
+        if (audio?.length) {
+          console.log(`[PinsonBotWS] Received ${audio.length} audio file(s) with message`);
+        }
+        if (video?.length) {
+          console.log(`[PinsonBotWS] Received ${video.length} video(s) with message`);
+        }
+        if (attachments?.length) {
+          console.log(`[PinsonBotWS] Received ${attachments.length} attachment(s) with message`);
+        }
+        
         console.log(`[PinsonBotWS] Emitting user_message: content="${content?.substring(0, 50)}", sessionId="${sessionId}", userId="${userId}", userRole="${userRole}"`);
         
         // Store user message in history
@@ -654,6 +738,11 @@ export class PinsonBotWSClient extends EventEmitter {
           userId,
           userRole,
           timestamp: message.timestamp,
+          // Media attachments (ACP standard)
+          images,
+          audio,
+          video,
+          attachments,
         });
         break;
 
