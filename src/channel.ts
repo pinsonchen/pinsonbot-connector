@@ -153,6 +153,243 @@ function getSessionRole(sessionKey: string, config: SecurityConfig = DEFAULT_SEC
   return isAdminSession(sessionKey, config) ? "admin" : "user";
 }
 
+// ============ Security Constants ============
+
+/**
+ * 安全限制常量
+ */
+const SECURITY_LIMITS = {
+  // 消息长度限制
+  MAX_MESSAGE_LENGTH: 10000,        // 单条消息最大 10KB
+  MAX_MESSAGE_LENGTH_WARN: 5000,    // 超过 5KB 警告
+  
+  // 多媒体限制
+  MAX_IMAGE_SIZE: 10 * 1024 * 1024,  // 单张图片最大 10MB (Base64 后约 13MB)
+  MAX_TOTAL_MEDIA_SIZE: 20 * 1024 * 1024,  // 总媒体大小 20MB
+  MAX_IMAGES_COUNT: 10,              // 最多 10 张图片
+  MAX_AUDIO_DURATION: 300,           // 音频最长 5 分钟 (秒)
+  
+  // 允许的 MIME 类型
+  ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+  ALLOWED_AUDIO_TYPES: ['audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/mp4'],
+  ALLOWED_VIDEO_TYPES: ['video/mp4', 'video/webm', 'video/ogg'],
+  
+  // SessionId 验证
+  SESSION_ID_MAX_LENGTH: 200,
+  SESSION_ID_PATTERN: /^pinsonbot:[a-zA-Z0-9_:-]+$/,
+  
+  // 频率限制 (每个 sessionId)
+  RATE_LIMIT_WINDOW_MS: 60000,       // 1 分钟窗口
+  RATE_LIMIT_MAX_MESSAGES: 30,       // 每分钟最多 30 条消息
+  
+  // 敏感文件路径
+  SENSITIVE_PATHS: [
+    '/etc/',
+    '/root/',
+    '/home/',
+    '.ssh/',
+    '.env',
+    'config.json',
+    'credentials',
+    '.pem',
+    '.key',
+    'id_rsa',
+    'authorized_keys',
+  ],
+};
+
+/**
+ * 频率限制器
+ */
+const rateLimiters = new Map<string, { count: number; resetAt: number }>();
+
+/**
+ * 检查频率限制
+ */
+function checkRateLimit(sessionId: string): { allowed: boolean; remaining: number; resetIn: number } {
+  const now = Date.now();
+  const limiter = rateLimiters.get(sessionId);
+  
+  // 清理过期的限制器
+  if (limiter && limiter.resetAt < now) {
+    rateLimiters.delete(sessionId);
+  }
+  
+  const current = rateLimiters.get(sessionId);
+  
+  if (!current) {
+    rateLimiters.set(sessionId, {
+      count: 1,
+      resetAt: now + SECURITY_LIMITS.RATE_LIMIT_WINDOW_MS,
+    });
+    return {
+      allowed: true,
+      remaining: SECURITY_LIMITS.RATE_LIMIT_MAX_MESSAGES - 1,
+      resetIn: SECURITY_LIMITS.RATE_LIMIT_WINDOW_MS,
+    };
+  }
+  
+  if (current.count >= SECURITY_LIMITS.RATE_LIMIT_MAX_MESSAGES) {
+    return {
+      allowed: false,
+      remaining: 0,
+      resetIn: current.resetAt - now,
+    };
+  }
+  
+  current.count++;
+  return {
+    allowed: true,
+    remaining: SECURITY_LIMITS.RATE_LIMIT_MAX_MESSAGES - current.count,
+    resetIn: current.resetAt - now,
+  };
+}
+
+/**
+ * 验证 SessionId 格式
+ */
+function validateSessionId(sessionId: string): { valid: boolean; error?: string } {
+  if (!sessionId) {
+    return { valid: false, error: "SessionId 不能为空" };
+  }
+  
+  if (sessionId.length > SECURITY_LIMITS.SESSION_ID_MAX_LENGTH) {
+    return { valid: false, error: "SessionId 长度超过限制" };
+  }
+  
+  if (!SECURITY_LIMITS.SESSION_ID_PATTERN.test(sessionId) && !sessionId.includes(':')) {
+    return { valid: false, error: "SessionId 格式无效" };
+  }
+  
+  return { valid: true };
+}
+
+/**
+ * 验证多媒体数据
+ */
+function validateMedia(
+  images?: ImageContent[],
+  audio?: AudioContent[],
+  video?: VideoContent[],
+  attachments?: MessageAttachment[]
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  let totalSize = 0;
+  
+  // 验证图片
+  if (images?.length) {
+    if (images.length > SECURITY_LIMITS.MAX_IMAGES_COUNT) {
+      errors.push(`图片数量超过限制 (最多 ${SECURITY_LIMITS.MAX_IMAGES_COUNT} 张)`);
+    }
+    
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      
+      // 检查 MIME type
+      if (img.mimeType && !SECURITY_LIMITS.ALLOWED_IMAGE_TYPES.includes(img.mimeType)) {
+        errors.push(`图片 ${i + 1} 类型不允许: ${img.mimeType}`);
+      }
+      
+      // 检查大小
+      if (img.data) {
+        const size = Buffer.byteLength(img.data, 'base64');
+        totalSize += size;
+        
+        if (size > SECURITY_LIMITS.MAX_IMAGE_SIZE) {
+          errors.push(`图片 ${i + 1} 大小超过限制 (${Math.round(size / 1024 / 1024)}MB > ${SECURITY_LIMITS.MAX_IMAGE_SIZE / 1024 / 1024}MB)`);
+        }
+      }
+    }
+  }
+  
+  // 验证附件
+  if (attachments?.length) {
+    for (let i = 0; i < attachments.length; i++) {
+      const att = attachments[i];
+      
+      if (att.type === 'image' && att.mimeType && !SECURITY_LIMITS.ALLOWED_IMAGE_TYPES.includes(att.mimeType)) {
+        errors.push(`附件 ${i + 1} 图片类型不允许: ${att.mimeType}`);
+      }
+      
+      if (att.data) {
+        const size = Buffer.byteLength(att.data, 'base64');
+        totalSize += size;
+      }
+    }
+  }
+  
+  // 检查总大小
+  if (totalSize > SECURITY_LIMITS.MAX_TOTAL_MEDIA_SIZE) {
+    errors.push(`总媒体大小超过限制 (${Math.round(totalSize / 1024 / 1024)}MB > ${SECURITY_LIMITS.MAX_TOTAL_MEDIA_SIZE / 1024 / 1024}MB)`);
+  }
+  
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * 验证消息内容
+ */
+function validateMessageContent(content: string): { valid: boolean; error?: string; sanitized?: string } {
+  if (!content) {
+    return { valid: true, sanitized: "" };
+  }
+  
+  // 检查长度
+  if (content.length > SECURITY_LIMITS.MAX_MESSAGE_LENGTH) {
+    return { 
+      valid: false, 
+      error: `消息长度超过限制 (${content.length} > ${SECURITY_LIMITS.MAX_MESSAGE_LENGTH})` 
+    };
+  }
+  
+  // 警告超长消息
+  if (content.length > SECURITY_LIMITS.MAX_MESSAGE_LENGTH_WARN) {
+    console.warn(`[Security] Message length warning: ${content.length} characters`);
+  }
+  
+  return { valid: true, sanitized: content };
+}
+
+/**
+ * 检查是否包含敏感路径
+ */
+function containsSensitivePath(text: string): boolean {
+  if (!text) return false;
+  
+  const lowerText = text.toLowerCase();
+  return SECURITY_LIMITS.SENSITIVE_PATHS.some(path => lowerText.includes(path.toLowerCase()));
+}
+
+/**
+ * 清理错误信息中的敏感内容
+ */
+function sanitizeErrorMessage(error: Error | string): string {
+  const message = typeof error === 'string' ? error : (error.message || '未知错误');
+  
+  // 移除文件路径
+  let sanitized = message.replace(/\/[^\s]+\.(ts|js|json|py|yaml|yml|env|key|pem)/gi, '[PATH_REDACTED]');
+  
+  // 移除可能的 IP 地址
+  sanitized = sanitized.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '[IP_REDACTED]');
+  
+  // 移除端口号
+  sanitized = sanitized.replace(/:\d{4,5}/g, ':[PORT_REDACTED]');
+  
+  // 移除敏感路径
+  for (const path of SECURITY_LIMITS.SENSITIVE_PATHS) {
+    const regex = new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    sanitized = sanitized.replace(regex, '[PATH_REDACTED]');
+  }
+  
+  // 使用已有的敏感信息过滤
+  sanitized = sanitizeResponse(sanitized);
+  
+  return sanitized;
+}
+
 // ============ API Key Security Protection ============
 
 /**
@@ -367,7 +604,7 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
     chatTypes: ["direct", "group"] as Array<"direct" | "group">,
     reactions: false,
     threads: false,
-    media: false,
+    media: true, // 启用媒体功能：支持图片、音频、视频
     nativeCommands: false,
     blockStreaming: false,
   },
@@ -510,6 +747,25 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
       return {
         channel: "pinsonbot",
         messageId: `pb-${Date.now()}`,
+      };
+    },
+
+    // ============ Media Support ============
+    sendMedia: async ({ cfg, to, mediaUrl, mediaType, accountId, log }: any) => {
+      const client = activeClients.get(accountId || "default");
+      if (!client) {
+        throw new Error("PinsonBot channel not connected");
+      }
+
+      const success = client.sendMediaResponse(mediaUrl, mediaType, to);
+
+      if (!success) {
+        throw new Error("Failed to send media");
+      }
+
+      return {
+        channel: "pinsonbot",
+        messageId: `pb-media-${Date.now()}`,
       };
     },
   },
@@ -743,9 +999,49 @@ async function handleInboundMessage(
 ): Promise<void> {
   const { content, sessionId, conversationId, userId, userRole, images, audio, video, attachments } = message;
 
-  // Debug: log the full message structure
+  // ============ Security: Rate Limiting ============
+  const rateCheck = checkRateLimit(sessionId);
+  if (!rateCheck.allowed) {
+    ctx.log?.warn?.(`[${account.accountId}] Rate limit exceeded for session: ${sessionId}`);
+    client.sendAssistantResponse(
+      `⚠️ 消息发送过快，请等待 ${Math.ceil(rateCheck.resetIn / 1000)} 秒后再试`,
+      sessionId
+    );
+    return;
+  }
+
+  // ============ Security: SessionId Validation ============
+  const sessionIdCheck = validateSessionId(sessionId);
+  if (!sessionIdCheck.valid) {
+    ctx.log?.warn?.(`[${account.accountId}] Invalid sessionId: ${sessionIdCheck.error}`);
+    // 不返回详细错误，只返回通用错误
+    client.sendAssistantResponse("⚠️ 会话格式无效", sessionId);
+    return;
+  }
+
+  // ============ Security: Message Content Validation ============
+  const contentCheck = validateMessageContent(content || "");
+  if (!contentCheck.valid) {
+    ctx.log?.warn?.(`[${account.accountId}] Message validation failed: ${contentCheck.error}`);
+    client.sendAssistantResponse("⚠️ 消息内容过长，请缩短后重试", sessionId);
+    return;
+  }
+  const safeContent = contentCheck.sanitized || "";
+
+  // ============ Security: Media Validation ============
+  const mediaCheck = validateMedia(images, audio, video, attachments);
+  if (!mediaCheck.valid) {
+    ctx.log?.warn?.(`[${account.accountId}] Media validation failed: ${mediaCheck.errors.join(', ')}`);
+    client.sendAssistantResponse(
+      `⚠️ 多媒体验证失败：${mediaCheck.errors[0]}`,
+      sessionId
+    );
+    return;
+  }
+
+  // Debug: log the full message structure (sanitized)
   ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify({
-    content: content?.substring(0, 100),
+    content: safeContent?.substring(0, 50) + (safeContent?.length > 50 ? '...' : ''),
     sessionId,
     conversationId,
     userId,
@@ -754,13 +1050,11 @@ async function handleInboundMessage(
     audio: audio?.length || 0,
     video: video?.length || 0,
     attachments: attachments?.length || 0,
+    rateLimit: { remaining: rateCheck.remaining },
   })}`);
 
   const stats = getInboundCounters(account.accountId);
   stats.received += 1;
-
-  // Safety check for undefined content
-  const safeContent = content || "";
   
   // Log message with media info
   const mediaInfo: string[] = [];
@@ -1002,16 +1296,18 @@ async function handleInboundMessage(
     markMessageProcessed(dedupKey);
     stats.processed += 1;
   } catch (error: any) {
+    // Security: 清理错误信息中的敏感内容
+    const safeErrorMessage = sanitizeErrorMessage(error);
     ctx.log?.error?.(
-      `[${account.accountId}] AI processing error: ${error.message}`
+      `[${account.accountId}] AI processing error: ${safeErrorMessage}`
     );
 
     // End typing
     client.sendTypingIndicator(sessionId, false);
 
-    // Send error to user
+    // Security: 返回清理后的错误信息给用户
     client.sendAssistantResponse(
-      `⚠️ 处理失败：${error.message}`,
+      `⚠️ 处理失败，请稍后重试`,
       sessionId
     );
 

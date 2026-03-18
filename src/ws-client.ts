@@ -235,9 +235,9 @@ export class PinsonBotWSClient extends EventEmitter {
     };
     if (conversationId !== undefined) {
       data.conversation_id = conversationId;
-      console.log(`[PinsonBotWS] sendAssistantResponse: conversation_id=${conversationId}, content=${content.substring(0, 50)}`);
+      console.log(`[PinsonBotWS] sendAssistantResponse: conversation_id=${conversationId}, contentLength=${content?.length || 0}`);
     } else {
-      console.warn(`[PinsonBotWS] sendAssistantResponse: NO conversation_id! content=${content.substring(0, 50)}`);
+      console.warn(`[PinsonBotWS] sendAssistantResponse: NO conversation_id! contentLength=${content?.length || 0}`);
     }
     return this.sendMessage({
       type: "bot_response",
@@ -308,6 +308,33 @@ export class PinsonBotWSClient extends EventEmitter {
     conversationId?: number
   ): boolean {
     return this.sendAssistantResponseWithMedia(content, sessionId, { images }, conversationId);
+  }
+
+  /**
+   * Send media response via URL
+   * 用于发送图片、音频、视频等媒体文件
+   */
+  sendMediaResponse(mediaUrl: string, mediaType: string, sessionId: string, conversationId?: number): boolean {
+    const data: any = {
+      content: "",
+      media_url: mediaUrl,
+      media_type: mediaType, // "image" | "audio" | "video"
+      session_id: sessionId,
+      role: "assistant",
+      lobster_id: this.lobsterId,
+    };
+    
+    if (conversationId !== undefined) {
+      data.conversation_id = conversationId;
+    }
+    
+    console.log(`[PinsonBotWS] sendMediaResponse: type=${mediaType}, url=${mediaUrl?.substring(0, 50)}...`);
+    
+    return this.sendMessage({
+      type: "bot_response",
+      data,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**
@@ -654,7 +681,7 @@ export class PinsonBotWSClient extends EventEmitter {
    * Handle incoming messages
    */
   private handleMessage(message: WSMessage): void {
-    console.log(`[PinsonBotWS] DEBUG received message: ${JSON.stringify(message)}`);
+    console.log(`[PinsonBotWS] Received message: type=${message.type}, sessionId=${message.data?.session_id?.substring(0, 30)}`);
     
     switch (message.type) {
       case "connected":
