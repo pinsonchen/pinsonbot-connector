@@ -1,7 +1,7 @@
 {
   "name": "pinsonbot",
   "version": "2.15.0",
-  "description": "OpenClaw Channel Plugin for PinsonBots Platform with media support, security hardening, and auto-update",
+  "description": "OpenClaw Channel Plugin for PinsonBots Platform with media support, security hardening, auto-update, and heartbeat mechanism",
   "main": "index.ts",
   "type": "module",
   "scripts": {
@@ -16,41 +16,20 @@
   },
   "keywords": [
     "openclaw",
-    "pinsonbot",
-    "wechat",
-    "chatbot",
     "plugin",
     "channel",
-    "auto-update",
-    "multimedia",
-    "vision"
+    "pinsonbot",
+    "websocket"
   ],
-  "author": "PinsonBots Team",
+  "author": "pinsonchen",
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.16.0",
-    "axios": "^1.6.5",
-    "zod": "^4.3.6"
+    "openclaw": "file:../openclaw-sdk",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^20.10.6",
-    "@types/ws": "^8.5.10",
-    "typescript": "^5.3.3",
-    "ts-node-dev": "^2.0.0",
-    "eslint": "^8.56.0",
-    "@typescript-eslint/parser": "^6.18.1",
-    "@typescript-eslint/eslint-plugin": "^6.18.1",
-    "jest": "^29.7.0",
-    "@types/jest": "^29.5.11",
-    "ts-jest": "^29.1.1"
-  },
-  "peerDependencies": {
-    "openclaw": ">=2026.2.13"
-  },
-  "openclaw": {
-    "id": "pinsonbot",
-    "extensions": [
-      "./dist/index.js"
-    ]
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
   }
 }

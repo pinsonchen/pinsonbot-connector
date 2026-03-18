@@ -53,6 +53,23 @@ export class PinsonBotWSClient extends EventEmitter {
   private historySyncConfig: HistorySyncConfig;
   private pendingSync: Map<string, PendingSync> = new Map();
   private batchSyncInterval?: NodeJS.Timeout;
+  
+  // Heartbeat enhancement
+  private heartbeatInterval?: NodeJS.Timeout;
+  private heartbeatTimeout?: NodeJS.Timeout;
+  private lastHeartbeatSent?: number;
+  private lastHeartbeatAck?: number;
+  private heartbeatStats: {
+    sent: number;
+    acked: number;
+    failed: number;
+    lastSuccessTime?: number;
+    lastFailTime?: number;
+  } = { sent: 0, acked: 0, failed: 0 };
+  private heartbeatIntervalMs: number;
+  private heartbeatTimeoutMs: number;
+  private maxHeartbeatFailures: number;
+  private consecutiveHeartbeatFailures: number = 0;
 
   constructor(
     lobsterId: string,
@@ -63,6 +80,9 @@ export class PinsonBotWSClient extends EventEmitter {
       reconnectDelay?: number;
       reconnectBackoff?: number;
       historySync?: Partial<HistorySyncConfig>;
+      heartbeatIntervalMs?: number;
+      heartbeatTimeoutMs?: number;
+      maxHeartbeatFailures?: number;
     } = {}
   ) {
     super();
@@ -83,6 +103,11 @@ export class PinsonBotWSClient extends EventEmitter {
       batchIntervalMs: options.historySync?.batchIntervalMs ?? 5000,
       maxCacheSize: options.historySync?.maxCacheSize ?? 1000,
     };
+    
+    // Heartbeat options
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs || 30000;
+    this.heartbeatTimeoutMs = options.heartbeatTimeoutMs || 90000;
+    this.maxHeartbeatFailures = options.maxHeartbeatFailures || 3;
 
     // Build WebSocket URL with authentication
     const url = new URL(endpoint);
@@ -122,14 +147,16 @@ export class PinsonBotWSClient extends EventEmitter {
         this.connected = true;
         this.reconnectAttempts = 0;
         this.isManualDisconnect = false;
+        this.consecutiveHeartbeatFailures = 0;
         this.stopPlatformRecoveryCheck();
         this.emit("connected", { lobsterId: this.lobsterId });
 
         // Send metadata after connection
         this.sendMetadata();
 
-        // Start health check
+        // Start health checks (both WebSocket ping and application heartbeat)
         this.startHealthCheck();
+        this.startHeartbeat();
 
         // Process queued messages
         this.processMessageQueue();
@@ -155,6 +182,7 @@ export class PinsonBotWSClient extends EventEmitter {
         );
         this.connected = false;
         this.stopHealthCheck();
+        this.stopHeartbeat();
         this.emit("disconnected", { code, reason: reason.toString() });
 
         // Attempt reconnection
@@ -179,6 +207,7 @@ export class PinsonBotWSClient extends EventEmitter {
     console.log("[PinsonBotWS] Manual disconnect requested");
     this.isManualDisconnect = true;
     this.stopHealthCheck();
+    this.stopHeartbeat();
     this.stopPlatformRecoveryCheck();
     this.stopBatchSync();
 
@@ -431,31 +460,6 @@ export class PinsonBotWSClient extends EventEmitter {
   }
 
   /**
-   * Get connection statistics
-   */
-  getStats(): {
-    connected: boolean;
-    lobsterId: string;
-    queueLength: number;
-    reconnectAttempts: number;
-    historySessions: number;
-    historySyncEnabled: boolean;
-    historySyncMode: string;
-    pendingSyncCount: number;
-  } {
-    return {
-      connected: this.isConnected(),
-      lobsterId: this.lobsterId,
-      queueLength: this.messageQueue.length,
-      reconnectAttempts: this.reconnectAttempts,
-      historySessions: this.conversationHistory.size,
-      historySyncEnabled: this.historySyncConfig.enabled,
-      historySyncMode: this.historySyncConfig.mode,
-      pendingSyncCount: this.pendingSync.size,
-    };
-  }
-
-  /**
    * Send metadata to PinsonBots Platform
    * Called after connection is established
    */
@@ -467,20 +471,6 @@ export class PinsonBotWSClient extends EventEmitter {
       return this.sendMessage(message);
     } catch (error) {
       console.error("[PinsonBotWS] Failed to send metadata:", error);
-      return false;
-    }
-  }
-
-  /**
-   * Send heartbeat with updated metadata
-   */
-  sendHeartbeat(): boolean {
-    try {
-      const metadata = collectMetadata();
-      const message = createHeartbeatMessage(metadata);
-      return this.sendMessage(message);
-    } catch (error) {
-      console.error("[PinsonBotWS] Failed to send heartbeat:", error);
       return false;
     }
   }
@@ -686,6 +676,22 @@ export class PinsonBotWSClient extends EventEmitter {
     switch (message.type) {
       case "connected":
         console.log("[PinsonBotWS] Server confirmed connection");
+        break;
+
+      case "heartbeat_ack":
+        // Heartbeat acknowledgment
+        this.lastHeartbeatAck = Date.now();
+        this.heartbeatStats.acked++;
+        this.heartbeatStats.lastSuccessTime = Date.now();
+        this.consecutiveHeartbeatFailures = 0;
+        const latency = this.lastHeartbeatSent ? Date.now() - this.lastHeartbeatSent : 0;
+        console.log(`[PinsonBotWS] Heartbeat ACK received (latency: ${latency}ms, total: ${this.heartbeatStats.acked})`);
+        
+        // Clear timeout timer
+        if (this.heartbeatTimeout) {
+          clearTimeout(this.heartbeatTimeout);
+          this.heartbeatTimeout = undefined;
+        }
         break;
 
       case "message":
@@ -943,5 +949,163 @@ export class PinsonBotWSClient extends EventEmitter {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = undefined;
     }
+  }
+
+  // ==================== Application Heartbeat ====================
+
+  /**
+   * Start application-level heartbeat
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      this.stopHeartbeat();
+    }
+
+    console.log(`[PinsonBotWS] Starting application heartbeat (interval: ${this.heartbeatIntervalMs}ms, timeout: ${this.heartbeatTimeoutMs}ms)`);
+
+    this.heartbeatInterval = setInterval(() => {
+      if (!this.isConnected()) {
+        this.stopHeartbeat();
+        return;
+      }
+
+      // Check for timeout
+      if (this.heartbeatTimeout) {
+        this.consecutiveHeartbeatFailures++;
+        this.heartbeatStats.failed++;
+        this.heartbeatStats.lastFailTime = Date.now();
+        
+        console.warn(
+          `[PinsonBotWS] Heartbeat timeout! Consecutive failures: ${this.consecutiveHeartbeatFailures}/${this.maxHeartbeatFailures}`
+        );
+
+        clearTimeout(this.heartbeatTimeout);
+        this.heartbeatTimeout = undefined;
+
+        // Trigger reconnect if max failures reached
+        if (this.consecutiveHeartbeatFailures >= this.maxHeartbeatFailures) {
+          console.error(
+            `[PinsonBotWS] Max heartbeat failures reached, triggering reconnection`
+          );
+          this.emit("heartbeat_failed", {
+            consecutiveFailures: this.consecutiveHeartbeatFailures,
+            stats: this.heartbeatStats,
+          });
+          
+          if (this.ws) {
+            this.ws.close(1001, "Heartbeat timeout");
+          }
+          return;
+        }
+      }
+
+      // Send heartbeat
+      this.sendHeartbeat();
+    }, this.heartbeatIntervalMs);
+  }
+
+  /**
+   * Stop application-level heartbeat
+   */
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = undefined;
+    }
+    if (this.heartbeatTimeout) {
+      clearTimeout(this.heartbeatTimeout);
+      this.heartbeatTimeout = undefined;
+    }
+    console.log("[PinsonBotWS] Application heartbeat stopped");
+  }
+
+  /**
+   * Send heartbeat with updated metadata
+   */
+  sendHeartbeat(): boolean {
+    try {
+      const metadata = collectMetadata();
+      const message = createHeartbeatMessage(metadata);
+      
+      this.lastHeartbeatSent = Date.now();
+      this.heartbeatStats.sent++;
+      
+      // Set timeout timer
+      if (this.heartbeatTimeout) {
+        clearTimeout(this.heartbeatTimeout);
+      }
+      this.heartbeatTimeout = setTimeout(() => {
+        console.log("[PinsonBotWS] Heartbeat timeout timer triggered");
+      }, this.heartbeatTimeoutMs);
+
+      const result = this.sendMessage(message);
+      if (result) {
+        console.log(`[PinsonBotWS] Heartbeat sent (total: ${this.heartbeatStats.sent})`);
+      }
+      return result;
+    } catch (error) {
+      console.error("[PinsonBotWS] Failed to send heartbeat:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Get heartbeat statistics
+   */
+  getHeartbeatStats(): {
+    sent: number;
+    acked: number;
+    failed: number;
+    successRate: number;
+    lastSuccessTime?: number;
+    lastFailTime?: number;
+    consecutiveFailures: number;
+  } {
+    const successRate = this.heartbeatStats.sent > 0
+      ? (this.heartbeatStats.acked / this.heartbeatStats.sent) * 100
+      : 100;
+    
+    return {
+      ...this.heartbeatStats,
+      successRate,
+      consecutiveFailures: this.consecutiveHeartbeatFailures,
+    };
+  }
+
+  /**
+   * Reset heartbeat statistics
+   */
+  resetHeartbeatStats(): void {
+    this.heartbeatStats = { sent: 0, acked: 0, failed: 0 };
+    this.consecutiveHeartbeatFailures = 0;
+    this.lastHeartbeatSent = undefined;
+    this.lastHeartbeatAck = undefined;
+  }
+
+  /**
+   * Get enhanced connection statistics
+   */
+  getStats(): {
+    connected: boolean;
+    lobsterId: string;
+    queueLength: number;
+    reconnectAttempts: number;
+    historySessions: number;
+    heartbeat?: {
+      sent: number;
+      acked: number;
+      failed: number;
+      successRate: number;
+      consecutiveFailures: number;
+    };
+  } {
+    return {
+      connected: this.isConnected(),
+      lobsterId: this.lobsterId,
+      queueLength: this.messageQueue.length,
+      reconnectAttempts: this.reconnectAttempts,
+      historySessions: this.conversationHistory.size,
+      heartbeat: this.getHeartbeatStats(),
+    };
   }
 }

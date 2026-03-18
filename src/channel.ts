@@ -893,6 +893,12 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         );
       });
 
+      client.on("heartbeat_failed", ({ consecutiveFailures, stats }: { consecutiveFailures: number; stats: any }) => {
+        ctx.log?.warn?.(
+          `[${account.accountId}] Heartbeat failed ${consecutiveFailures} times. Success rate: ${stats.successRate?.toFixed(2)}%`
+        );
+      });
+
       // Track abort listener for cleanup
       let abortListener: (() => void) | null = null;
       let isStopped = false;
