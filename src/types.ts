@@ -86,15 +86,17 @@ export type ChannelAccountSnapshot = SDKChannelAccountSnapshot;
 /**
  * Image content following AgentClientProtocol standard
  * @see https://agentclientprotocol.com
- * 
- * Re-export from @mariozechner/pi-ai for OpenClaw compatibility
  */
-export type { ImageContent } from "@mariozechner/pi-ai";
+export interface ImageContent {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
 
 /**
  * Helper function to create ImageContent
  */
-export function createImageContent(data: string, mimeType: string): import("@mariozechner/pi-ai").ImageContent {
+export function createImageContent(data: string, mimeType: string): ImageContent {
   return { type: "image", data, mimeType };
 }
 
@@ -135,7 +137,7 @@ export interface VideoContent {
 /**
  * Union type for all media content types
  */
-export type MediaContent = import("@mariozechner/pi-ai").ImageContent | AudioContent | VideoContent;
+export type MediaContent = ImageContent | AudioContent | VideoContent;
 
 /**
  * Attachment for message sending (ACP compatible)
@@ -163,7 +165,7 @@ export interface PinsonBotMessage {
     role?: string;
     messages?: any[];
     /** Media attachments (ACP standard) */
-    images?: import("@mariozechner/pi-ai").ImageContent[];
+    images?: ImageContent[];
     audio?: AudioContent[];
     video?: VideoContent[];
     attachments?: MessageAttachment[];
@@ -184,7 +186,7 @@ export interface PinsonBotInboundMessage {
     role?: string;
     messages?: any[];
     /** Media attachments (ACP standard) */
-    images?: import("@mariozechner/pi-ai").ImageContent[];
+    images?: ImageContent[];
     audio?: AudioContent[];
     video?: VideoContent[];
     attachments?: MessageAttachment[];
@@ -204,7 +206,7 @@ export interface WSClientEvents {
     userRole?: string;     // 用户角色
     timestamp?: string;
     /** Media attachments (ACP standard) */
-    images?: import("@mariozechner/pi-ai").ImageContent[];
+    images?: ImageContent[];
     audio?: AudioContent[];
     video?: VideoContent[];
     attachments?: MessageAttachment[];
@@ -395,7 +397,7 @@ export interface MultiBotResponseMessage {
     /** 元数据 */
     metadata?: ResponseMetadata;
     /** 图片附件（ACP 标准） */
-    images?: import("@mariozechner/pi-ai").ImageContent[];
+    images?: ImageContent[];
     /** 音频附件（ACP 标准） */
     audio?: AudioContent[];
     /** 视频附件（ACP 标准） */
