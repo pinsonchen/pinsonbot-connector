@@ -60,6 +60,25 @@ function getOpenClawVersion(): string {
 }
 
 /**
+ * 获取 PinsonBot 插件版本
+ */
+function getPluginVersion(): string {
+  try {
+    // 从插件自身的 package.json 读取
+    const packagePath = "/root/.openclaw/extensions/pinsonbot/package.json";
+    if (fs.existsSync(packagePath)) {
+      const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
+      return pkg.version || "unknown";
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+  
+  // 回退到已知版本
+  return "2.15.0";
+}
+
+/**
  * 获取 Gateway 版本（与 OpenClaw 相同）
  */
 function getGatewayVersion(): string {
@@ -126,7 +145,7 @@ function collectOpenClawInfo(): Partial<OpenClawMetadata> {
   return {
     openclaw_version: getOpenClawVersion(),
     gateway_version: getGatewayVersion(),
-    plugin_version: "2.7.0",
+    plugin_version: getPluginVersion(),
   };
 }
 
@@ -222,7 +241,7 @@ export function createHeartbeatMessage(metadata: Partial<OpenClawMetadata>): { t
 export function getMinimalMetadata(): object {
   return {
     openclaw_version: getOpenClawVersion(),
-    plugin_version: "2.7.0",
+    plugin_version: getPluginVersion(),
     default_model: getDefaultModel(),
     region: process.env.OPENCLAW_REGION || "Hangzhou",
   };
