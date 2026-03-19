@@ -64,7 +64,7 @@ function getOpenClawVersion(): string {
  */
 function getPluginVersion(): string {
   try {
-    // 从插件自身的 package.json 读取
+    // 从插件自身的 package.json 读取（优先）
     const packagePath = "/root/.openclaw/extensions/pinsonbot/package.json";
     if (fs.existsSync(packagePath)) {
       const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
@@ -74,8 +74,19 @@ function getPluginVersion(): string {
     // 忽略错误
   }
   
-  // 回退到已知版本
-  return "2.15.0";
+  try {
+    // 回退：从当前文件所在目录的 package.json 读取
+    const fallbackPath = path.join(__dirname, '..', 'package.json');
+    if (fs.existsSync(fallbackPath)) {
+      const pkg = JSON.parse(fs.readFileSync(fallbackPath, "utf-8"));
+      return pkg.version || "unknown";
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+  
+  // 最终回退：返回未知
+  return "unknown";
 }
 
 /**

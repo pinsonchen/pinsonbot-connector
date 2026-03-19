@@ -1,6 +1,6 @@
 {
   "name": "pinsonbot",
-  "version": "2.15.1",
+  "version": "2.15.2",
   "description": "OpenClaw Channel Plugin for PinsonBots Platform with media support, security hardening, auto-update, and heartbeat mechanism",
   "main": "index.ts",
   "type": "module",
