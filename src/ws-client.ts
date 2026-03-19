@@ -10,7 +10,7 @@
 
 import WebSocket from "ws";
 import { EventEmitter } from "events";
-import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage, ApiCallStats, ImageContent, AudioContent, VideoContent, MessageAttachment } from "./types.js";
+import type { PinsonBotMessage, HistoryMessage, HistorySyncConfig, TokenUsage, ApiCallStats, ImageContent, AudioContent, VideoContent, MessageAttachment, ResponseType, ResponseMetadata, MultiBotResponseMessage } from "./types.js";
 import { collectMetadata, createMetadataMessage, createHeartbeatMessage } from "./metadata.js";
 
 interface WSMessage {
@@ -372,6 +372,196 @@ export class PinsonBotWSClient extends EventEmitter {
     return this.sendMessage({
       type: "bot_response",
       data,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * 发送多消息响应（新 API - v2.16.0）
+   * 支持一条用户输入对应多条 AI 响应
+   * 
+   * @param responses - 响应数组，每个响应包含 content、response_type、metadata
+   * @param sessionId - 会话 ID
+   * @param conversationId - 对话 ID（用于关联父对话）
+   * @returns 是否全部发送成功
+   * 
+   * @example
+   * ```typescript
+   * // 完整的多消息响应流程
+   * client.sendMultiMessageResponse([
+   *   { response_type: 'tool_call', content: '🔍 正在查询天气...', metadata: { tool_name: 'weather' } },
+   *   { response_type: 'tool_result', content: '北京：晴，25°C', metadata: { tool_name: 'weather', execution_time_ms: 120 } },
+   *   { response_type: 'intermediate', content: '根据查询结果...' },
+   *   { response_type: 'final', content: '建议您穿短袖并涂抹防晒霜。' }
+   * ], sessionId, conversationId);
+   * ```
+   */
+  sendMultiMessageResponse(
+    responses: Array<{
+      content: string;
+      response_type: ResponseType;
+      metadata?: ResponseMetadata;
+    }>,
+    sessionId: string,
+    conversationId: number
+  ): boolean {
+    let success = true;
+    
+    responses.forEach((response, index) => {
+      const message: MultiBotResponseMessage = {
+        type: 'bot_response',
+        data: {
+          content: response.content,
+          session_id: sessionId,
+          lobster_id: this.lobsterId,
+          conversation_id: conversationId,
+          response_type: response.response_type,
+          sequence: index,
+          metadata: response.metadata || {},
+        },
+        timestamp: new Date().toISOString(),
+      };
+      
+      if (!this.sendMessage(message)) {
+        console.error(`[PinsonBotWS] 发送多消息响应失败：seq=${index}`);
+        success = false;
+      }
+    });
+    
+    return success;
+  }
+
+  /**
+   * 发送工具调用响应（便捷方法 - v2.16.0）
+   * 用于通知用户 AI 正在调用工具
+   * 
+   * @param toolName - 工具名称
+   * @param toolArgs - 工具参数
+   * @param sessionId - 会话 ID
+   * @param conversationId - 对话 ID
+   * @returns 是否发送成功
+   * 
+   * @example
+   * ```typescript
+   * client.sendToolCallResponse('weather_query', { city: '北京' }, sessionId, conversationId);
+   * ```
+   */
+  sendToolCallResponse(
+    toolName: string,
+    toolArgs: Record<string, any>,
+    sessionId: string,
+    conversationId: number
+  ): boolean {
+    const content = `🔧 正在调用工具：${toolName}`;
+    
+    return this.sendMessage({
+      type: 'bot_response',
+      data: {
+        content,
+        session_id: sessionId,
+        lobster_id: this.lobsterId,
+        conversation_id: conversationId,
+        response_type: 'tool_call',
+        sequence: 0,
+        metadata: {
+          tool_name: toolName,
+          tool_args: toolArgs,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * 发送工具结果响应（便捷方法 - v2.16.0）
+   * 用于返回工具执行结果
+   * 
+   * @param toolName - 工具名称
+   * @param result - 执行结果（字符串或对象）
+   * @param sessionId - 会话 ID
+   * @param conversationId - 对话 ID
+   * @param executionTimeMs - 执行耗时（毫秒）
+   * @returns 是否发送成功
+   * 
+   * @example
+   * ```typescript
+   * // 字符串结果
+   * client.sendToolResultResponse('weather_query', '北京：晴，25°C', sessionId, conversationId, 120);
+   * 
+   * // 对象结果
+   * client.sendToolResultResponse('search', { results: [...] }, sessionId, conversationId, 340);
+   * ```
+   */
+  sendToolResultResponse(
+    toolName: string,
+    result: any,
+    sessionId: string,
+    conversationId: number,
+    executionTimeMs?: number
+  ): boolean {
+    const content = typeof result === 'string' 
+      ? result 
+      : JSON.stringify(result, null, 2);
+    
+    return this.sendMessage({
+      type: 'bot_response',
+      data: {
+        content,
+        session_id: sessionId,
+        lobster_id: this.lobsterId,
+        conversation_id: conversationId,
+        response_type: 'tool_result',
+        sequence: 1,
+        metadata: {
+          tool_name: toolName,
+          execution_time_ms: executionTimeMs,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * 发送中间结论响应（便捷方法 - v2.16.0）
+   * 用于流式场景下的中间状态展示
+   * 
+   * @param content - 中间结论内容
+   * @param sessionId - 会话 ID
+   * @param conversationId - 对话 ID
+   * @param sequence - 序列号（从 0 开始）
+   * @returns 是否发送成功
+   * 
+   * @example
+   * ```typescript
+   * // 第一步：工具调用
+   * client.sendToolCallResponse('search', { query: 'AI 发展趋势' }, sessionId, conversationId);
+   * 
+   * // 第二步：工具结果
+   * client.sendToolResultResponse('search', searchResults, sessionId, conversationId, 230);
+   * 
+   * // 第三步：中间结论
+   * client.sendIntermediateResponse('根据搜索结果，AI 发展呈现以下趋势...', sessionId, conversationId, 2);
+   * 
+   * // 第四步：最终回复
+   * client.sendAssistantResponse('综上所述，建议关注以下领域...', sessionId, conversationId);
+   * ```
+   */
+  sendIntermediateResponse(
+    content: string,
+    sessionId: string,
+    conversationId: number,
+    sequence: number
+  ): boolean {
+    return this.sendMessage({
+      type: 'bot_response',
+      data: {
+        content,
+        session_id: sessionId,
+        lobster_id: this.lobsterId,
+        conversation_id: conversationId,
+        response_type: 'intermediate',
+        sequence: sequence,
+      },
       timestamp: new Date().toISOString(),
     });
   }

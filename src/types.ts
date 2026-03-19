@@ -304,3 +304,103 @@ export interface ApiCallMessage {
     timestamp: string;
   };
 }
+
+// ============ Multi-Message Response Types (v2.16.0) ============
+
+/**
+ * 响应类型 - 支持一条用户输入对应多条 AI 响应
+ * 
+ * @example
+ * // Tool call notification
+ * { response_type: 'tool_call', content: '正在查询天气...', metadata: { tool_name: 'weather_query' } }
+ * 
+ * // Tool execution result
+ * { response_type: 'tool_result', content: '北京今天晴朗，25°C', metadata: { tool_name: 'weather_query', execution_time_ms: 234 } }
+ * 
+ * // Intermediate conclusion (streaming scenario)
+ * { response_type: 'intermediate', content: '根据数据分析...', sequence: 2 }
+ * 
+ * // Final response (updates main conversation record)
+ * { response_type: 'final', content: '综上所述，建议您带伞出门。', sequence: 3 }
+ * 
+ * // Error response
+ * { response_type: 'error', content: '工具调用失败', metadata: { error_code: 'TOOL_TIMEOUT' } }
+ */
+export type ResponseType = 
+  | 'tool_call'      // 工具调用通知
+  | 'tool_result'    // 工具执行结果
+  | 'intermediate'   // 中间结论（流式场景）
+  | 'final'          // 最终回复（更新主记录）
+  | 'error';         // 错误信息
+
+/**
+ * 响应元数据 - 携带额外上下文信息
+ * 
+ * @example
+ * // Tool call metadata
+ * { tool_name: 'weather_query', tool_args: { city: '北京' } }
+ * 
+ * // Tool result metadata
+ * { tool_name: 'weather_query', execution_time_ms: 234, tokens_used: 45 }
+ * 
+ * // Error metadata
+ * { error_code: 'TOOL_TIMEOUT', retry_count: 2 }
+ */
+export interface ResponseMetadata {
+  /** 工具名称（tool_call/tool_result 时必填） */
+  tool_name?: string;
+  /** 工具参数（tool_call 时使用） */
+  tool_args?: Record<string, any>;
+  /** 执行耗时（tool_result 时使用，毫秒） */
+  execution_time_ms?: number;
+  /** 消耗的 token 数 */
+  tokens_used?: number;
+  /** 错误码（error 时使用） */
+  error_code?: string;
+  /** 重试次数（error 时使用） */
+  retry_count?: number;
+  /** 其他自定义元数据 */
+  [key: string]: any;
+}
+
+/**
+ * 多消息响应消息结构
+ * 
+ * 用于实现一条用户输入对应多条 AI 响应的场景
+ * 
+ * @example
+ * // 完整的多消息响应流程
+ * const responses = [
+ *   { response_type: 'tool_call', content: '🔍 正在查询天气...', metadata: { tool_name: 'weather' }, sequence: 0 },
+ *   { response_type: 'tool_result', content: '北京：晴，25°C', metadata: { tool_name: 'weather', execution_time_ms: 120 }, sequence: 1 },
+ *   { response_type: 'intermediate', content: '根据查询结果...', sequence: 2 },
+ *   { response_type: 'final', content: '建议您穿短袖并涂抹防晒霜。', sequence: 3 }
+ * ];
+ */
+export interface MultiBotResponseMessage {
+  type: 'bot_response';
+  data: {
+    /** 响应内容 */
+    content: string;
+    /** 会话 ID */
+    session_id: string;
+    /** Lobster ID */
+    lobster_id: string;
+    /** 对话 ID（可选，用于关联父对话） */
+    conversation_id?: number;
+    /** 响应类型（默认：'final'） */
+    response_type?: ResponseType;
+    /** 序列号（用于排序，从 0 开始） */
+    sequence?: number;
+    /** 元数据 */
+    metadata?: ResponseMetadata;
+    /** 图片附件（ACP 标准） */
+    images?: import("@mariozechner/pi-ai").ImageContent[];
+    /** 音频附件（ACP 标准） */
+    audio?: AudioContent[];
+    /** 视频附件（ACP 标准） */
+    video?: VideoContent[];
+  };
+  /** ISO 8601 时间戳 */
+  timestamp: string;
+}
