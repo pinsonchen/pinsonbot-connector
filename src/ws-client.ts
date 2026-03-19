@@ -70,6 +70,10 @@ export class PinsonBotWSClient extends EventEmitter {
   private heartbeatTimeoutMs: number;
   private maxHeartbeatFailures: number;
   private consecutiveHeartbeatFailures: number = 0;
+  
+  // Auth retry
+  private authRetryCount: number = 0;
+  private maxAuthRetries: number = 2;
 
   constructor(
     lobsterId: string,
@@ -108,6 +112,9 @@ export class PinsonBotWSClient extends EventEmitter {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs || 30000;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs || 90000;
     this.maxHeartbeatFailures = options.maxHeartbeatFailures || 10;
+    
+    // Auth retry options
+    this.maxAuthRetries = 2;
 
     // Build WebSocket URL with authentication
     const url = new URL(endpoint);
@@ -464,24 +471,57 @@ export class PinsonBotWSClient extends EventEmitter {
 
   /**
    * Send auth frame (required by platform v2.0+ for first-frame authentication)
+   * With retry mechanism for temporary failures
    */
-  sendAuth(): boolean {
+  sendAuth(retryCount: number = 0): boolean {
     try {
       const authMessage: any = {
         type: "auth",
         token: this.internalToken,
         lobster_id: this.lobsterId,
       };
-      console.log(`[PinsonBotWS] Sending auth frame: lobster_id=${this.lobsterId}`);
-      // Send raw WebSocket message (bypass WSMessage type)
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify(authMessage));
-        console.log("[PinsonBotWS] Auth frame sent");
-        return true;
+      
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        console.error(`[PinsonBotWS] Auth failed: WebSocket not ready, readyState=${this.ws?.readyState}`);
+        return false;
       }
-      return false;
+      
+      console.log(`[PinsonBotWS] Sending auth frame: lobster_id=${this.lobsterId} (attempt ${retryCount + 1}/${this.maxAuthRetries + 1})`);
+      this.ws.send(JSON.stringify(authMessage));
+      console.log("[PinsonBotWS] Auth frame sent");
+      this.authRetryCount = retryCount;
+      return true;
+      
     } catch (error) {
-      console.error("[PinsonBotWS] Failed to send auth:", error);
+      // Detailed error classification
+      if (error instanceof Error) {
+        if (error.message.includes('timeout')) {
+          console.error(`[PinsonBotWS] Auth timeout: lobster_id=${this.lobsterId}`);
+        } else if (error.message.includes('WebSocket')) {
+          console.error(`[PinsonBotWS] WebSocket error: code=${(error as any).code}, message=${error.message}`);
+        } else {
+          console.error(`[PinsonBotWS] Auth error: ${error.message}`, {
+            lobster_id: this.lobsterId,
+            endpoint: this.endpoint,
+            readyState: this.ws?.readyState
+          });
+        }
+      } else {
+        console.error(`[PinsonBotWS] Unknown auth error:`, error);
+      }
+      
+      // Retry logic with exponential backoff
+      if (retryCount < this.maxAuthRetries) {
+        const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s...
+        console.log(`[PinsonBotWS] Retrying auth in ${delay}ms (attempt ${retryCount + 2}/${this.maxAuthRetries + 1})`);
+        
+        setTimeout(() => {
+          this.sendAuth(retryCount + 1);
+        }, delay);
+        return false;
+      }
+      
+      console.error(`[PinsonBotWS] Auth failed after ${this.maxAuthRetries + 1} attempts, triggering reconnect`);
       return false;
     }
   }
@@ -1048,8 +1088,9 @@ export class PinsonBotWSClient extends EventEmitter {
 
   /**
    * Send heartbeat with updated metadata
+   * With ACK retry mechanism for network jitter
    */
-  sendHeartbeat(): boolean {
+  sendHeartbeat(retryCount: number = 0): boolean {
     try {
       const metadata = collectMetadata();
       const message = createHeartbeatMessage(metadata);
@@ -1057,21 +1098,41 @@ export class PinsonBotWSClient extends EventEmitter {
       this.lastHeartbeatSent = Date.now();
       this.heartbeatStats.sent++;
       
-      // Set timeout timer
+      // Clear existing timeout
       if (this.heartbeatTimeout) {
         clearTimeout(this.heartbeatTimeout);
       }
+      
+      // Set timeout with ACK retry logic
+      const heartbeatAckTimeout = 10000; // 10 seconds for ACK
       this.heartbeatTimeout = setTimeout(() => {
-        console.log("[PinsonBotWS] Heartbeat timeout timer triggered");
-      }, this.heartbeatTimeoutMs);
+        // ACK not received, retry if within limit
+        if (retryCount < 2) {
+          console.log(`[PinsonBotWS] Heartbeat ACK timeout, retrying (attempt ${retryCount + 2}/3)`);
+          this.sendHeartbeat(retryCount + 1);
+        } else {
+          // Max retries reached, count as failure
+          console.warn(`[PinsonBotWS] Heartbeat ACK timeout after ${retryCount + 1} attempts`);
+          // The startHeartbeat interval will handle consecutive failures
+        }
+      }, heartbeatAckTimeout);
 
       const result = this.sendMessage(message);
       if (result) {
-        console.log(`[PinsonBotWS] Heartbeat sent (total: ${this.heartbeatStats.sent})`);
+        console.log(`[PinsonBotWS] Heartbeat sent (total: ${this.heartbeatStats.sent}, retry: ${retryCount})`);
       }
       return result;
     } catch (error) {
-      console.error("[PinsonBotWS] Failed to send heartbeat:", error);
+      // Detailed error logging
+      if (error instanceof Error) {
+        console.error(`[PinsonBotWS] Heartbeat send error: ${error.message}`, {
+          lobster_id: this.lobsterId,
+          retryCount,
+          readyState: this.ws?.readyState
+        });
+      } else {
+        console.error(`[PinsonBotWS] Heartbeat unknown error:`, error);
+      }
       return false;
     }
   }
