@@ -1,0 +1,1066 @@
+/**
+ * PinsonBot Channel Plugin for OpenClaw
+ *
+ * Connects to PinsonBots Platform WebSocket and uses OpenClaw Gateway AI.
+ *
+ * Architecture:
+ * - Runs inside OpenClaw Gateway as a Channel Plugin
+ * - WebSocket client connects to PinsonBots Platform internal endpoint
+ * - Inbound user messages are dispatched to Gateway AI
+ * - AI responses are sent back to PinsonBots Platform
+ *
+ * WebSocket path: /pinsonbots/internal/plugin?token={internal_token}&lobster_id={lobster_id}
+ */
+import * as pluginSdk from "openclaw/plugin-sdk";
+import { listAccountIds, resolveAccount, } from "./config.js";
+import { PinsonBotConfigSchema } from "./config-schema.js";
+import { isMessageProcessed, markMessageProcessed } from "./dedup.js";
+import { PinsonBotWSClient } from "./ws-client.js";
+import { getUpdater } from "./updater.js";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+// 获取插件目录路径（自动查找 package.json）
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// 向上查找 package.json 所在的插件根目录
+function findPluginRoot(startDir) {
+    const fs = require('fs');
+    const path = require('path');
+    let currentDir = startDir;
+    // 最多向上查找 5 层
+    for (let i = 0; i < 5; i++) {
+        const pkgPath = path.join(currentDir, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+            try {
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+                // 确认是 pinsonbot-connector 的 package.json
+                if (pkg.name === 'pinsonbot-connector') {
+                    return currentDir;
+                }
+            }
+            catch (e) {
+                // 忽略解析错误
+            }
+        }
+        const parentDir = path.dirname(currentDir);
+        if (parentDir === currentDir)
+            break; // 已到达根目录
+        currentDir = parentDir;
+    }
+    // 找不到则返回默认值
+    return path.join(__dirname, '..');
+}
+const PLUGIN_DIR = findPluginRoot(__dirname);
+import { createImageContent } from "./types.js";
+// In-flight processing guard (memory-only, complementary to dedup)
+const INFLIGHT_TTL_MS = 5 * 60 * 1000;
+const processingDedupKeys = new Map();
+// Active client registry
+const activeClients = new Map();
+// Inbound counters for monitoring
+const inboundCountersByAccount = new Map();
+const DEFAULT_SECURITY_CONFIG = {
+    adminSessionPatterns: [
+        // ============ 旧格式（向后兼容）============
+        // 单聊旧格式
+        /^pinsonbot:\d+:default$/, // pinsonbot:8:default
+        /^pinsonbot:default$/, // pinsonbot:default
+        /^pinsonbot:lobster_id:default$/, // pinsonbot:lobster_id:default
+        // 群聊旧格式（历史格式，默认管理员权限）
+        /^pinsonbot:\d+:group:\d+:user:\d+$/, // pinsonbot:8:group:1:user:123
+        /^pinsonbot:\d+:group:\d+/, // pinsonbot:8:group:1:* （所有旧群聊格式）
+        // ============ 新格式 ============
+        // user_role 只有两种：owner | guest
+        // owner → admin, guest → user
+        // 单聊新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
+        /^pinsonbot:\d+:owner:\d+$/, // pinsonbot:8:owner:123 → admin
+        /^pinsonbot:\d+:owner:[^:]+$/, // pinsonbot:8:owner:any_id → admin
+        // 群聊新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}:group:{group_id}:...
+        /^pinsonbot:\d+:owner:\d+:group:/, // pinsonbot:8:owner:123:group:1:user:123 → admin
+        /^pinsonbot:\d+:owner:[^:]+:group:/, // pinsonbot:8:owner:any_id:group:... → admin
+    ],
+    adminAgentId: "admin",
+    userAgentId: "user",
+};
+/**
+ * 检查会话是否为管理员会话
+ */
+function isAdminSession(sessionKey, config = DEFAULT_SECURITY_CONFIG) {
+    return config.adminSessionPatterns.some(pattern => pattern.test(sessionKey));
+}
+/**
+ * 根据会话获取目标代理 ID
+ */
+function getTargetAgentId(sessionKey, config = DEFAULT_SECURITY_CONFIG) {
+    return isAdminSession(sessionKey, config) ? config.adminAgentId : config.userAgentId;
+}
+/**
+ * 获取会话角色描述
+ */
+function getSessionRole(sessionKey, config = DEFAULT_SECURITY_CONFIG) {
+    return isAdminSession(sessionKey, config) ? "admin" : "user";
+}
+// ============ Security Constants ============
+/**
+ * 安全限制常量
+ */
+const SECURITY_LIMITS = {
+    // 消息长度限制
+    MAX_MESSAGE_LENGTH: 10000, // 单条消息最大 10KB
+    MAX_MESSAGE_LENGTH_WARN: 5000, // 超过 5KB 警告
+    // 多媒体限制
+    MAX_IMAGE_SIZE: 10 * 1024 * 1024, // 单张图片最大 10MB (Base64 后约 13MB)
+    MAX_TOTAL_MEDIA_SIZE: 20 * 1024 * 1024, // 总媒体大小 20MB
+    MAX_IMAGES_COUNT: 10, // 最多 10 张图片
+    MAX_AUDIO_DURATION: 300, // 音频最长 5 分钟 (秒)
+    // 允许的 MIME 类型
+    ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+    ALLOWED_AUDIO_TYPES: ['audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/mp4'],
+    ALLOWED_VIDEO_TYPES: ['video/mp4', 'video/webm', 'video/ogg'],
+    // SessionId 验证
+    SESSION_ID_MAX_LENGTH: 200,
+    SESSION_ID_PATTERN: /^pinsonbot:[a-zA-Z0-9_:-]+$/,
+    // 频率限制 (每个 sessionId)
+    RATE_LIMIT_WINDOW_MS: 60000, // 1 分钟窗口
+    RATE_LIMIT_MAX_MESSAGES: 30, // 每分钟最多 30 条消息
+    // 敏感文件路径
+    SENSITIVE_PATHS: [
+        '/etc/',
+        '/root/',
+        '/home/',
+        '.ssh/',
+        '.env',
+        'config.json',
+        'credentials',
+        '.pem',
+        '.key',
+        'id_rsa',
+        'authorized_keys',
+    ],
+};
+/**
+ * 频率限制器
+ */
+const rateLimiters = new Map();
+/**
+ * 检查频率限制
+ */
+function checkRateLimit(sessionId) {
+    const now = Date.now();
+    const limiter = rateLimiters.get(sessionId);
+    // 清理过期的限制器
+    if (limiter && limiter.resetAt < now) {
+        rateLimiters.delete(sessionId);
+    }
+    const current = rateLimiters.get(sessionId);
+    if (!current) {
+        rateLimiters.set(sessionId, {
+            count: 1,
+            resetAt: now + SECURITY_LIMITS.RATE_LIMIT_WINDOW_MS,
+        });
+        return {
+            allowed: true,
+            remaining: SECURITY_LIMITS.RATE_LIMIT_MAX_MESSAGES - 1,
+            resetIn: SECURITY_LIMITS.RATE_LIMIT_WINDOW_MS,
+        };
+    }
+    if (current.count >= SECURITY_LIMITS.RATE_LIMIT_MAX_MESSAGES) {
+        return {
+            allowed: false,
+            remaining: 0,
+            resetIn: current.resetAt - now,
+        };
+    }
+    current.count++;
+    return {
+        allowed: true,
+        remaining: SECURITY_LIMITS.RATE_LIMIT_MAX_MESSAGES - current.count,
+        resetIn: current.resetAt - now,
+    };
+}
+/**
+ * 验证 SessionId 格式
+ */
+function validateSessionId(sessionId) {
+    if (!sessionId) {
+        return { valid: false, error: "SessionId 不能为空" };
+    }
+    if (sessionId.length > SECURITY_LIMITS.SESSION_ID_MAX_LENGTH) {
+        return { valid: false, error: "SessionId 长度超过限制" };
+    }
+    if (!SECURITY_LIMITS.SESSION_ID_PATTERN.test(sessionId) && !sessionId.includes(':')) {
+        return { valid: false, error: "SessionId 格式无效" };
+    }
+    return { valid: true };
+}
+/**
+ * 验证多媒体数据
+ */
+function validateMedia(images, audio, video, attachments) {
+    const errors = [];
+    let totalSize = 0;
+    // 验证图片
+    if (images?.length) {
+        if (images.length > SECURITY_LIMITS.MAX_IMAGES_COUNT) {
+            errors.push(`图片数量超过限制 (最多 ${SECURITY_LIMITS.MAX_IMAGES_COUNT} 张)`);
+        }
+        for (let i = 0; i < images.length; i++) {
+            const img = images[i];
+            // 检查 MIME type
+            if (img.mimeType && !SECURITY_LIMITS.ALLOWED_IMAGE_TYPES.includes(img.mimeType)) {
+                errors.push(`图片 ${i + 1} 类型不允许: ${img.mimeType}`);
+            }
+            // 检查大小
+            if (img.data) {
+                const size = Buffer.byteLength(img.data, 'base64');
+                totalSize += size;
+                if (size > SECURITY_LIMITS.MAX_IMAGE_SIZE) {
+                    errors.push(`图片 ${i + 1} 大小超过限制 (${Math.round(size / 1024 / 1024)}MB > ${SECURITY_LIMITS.MAX_IMAGE_SIZE / 1024 / 1024}MB)`);
+                }
+            }
+        }
+    }
+    // 验证附件
+    if (attachments?.length) {
+        for (let i = 0; i < attachments.length; i++) {
+            const att = attachments[i];
+            if (att.type === 'image' && att.mimeType && !SECURITY_LIMITS.ALLOWED_IMAGE_TYPES.includes(att.mimeType)) {
+                errors.push(`附件 ${i + 1} 图片类型不允许: ${att.mimeType}`);
+            }
+            if (att.data) {
+                const size = Buffer.byteLength(att.data, 'base64');
+                totalSize += size;
+            }
+        }
+    }
+    // 检查总大小
+    if (totalSize > SECURITY_LIMITS.MAX_TOTAL_MEDIA_SIZE) {
+        errors.push(`总媒体大小超过限制 (${Math.round(totalSize / 1024 / 1024)}MB > ${SECURITY_LIMITS.MAX_TOTAL_MEDIA_SIZE / 1024 / 1024}MB)`);
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+    };
+}
+/**
+ * 验证消息内容
+ */
+function validateMessageContent(content) {
+    if (!content) {
+        return { valid: true, sanitized: "" };
+    }
+    // 检查长度
+    if (content.length > SECURITY_LIMITS.MAX_MESSAGE_LENGTH) {
+        return {
+            valid: false,
+            error: `消息长度超过限制 (${content.length} > ${SECURITY_LIMITS.MAX_MESSAGE_LENGTH})`
+        };
+    }
+    // 警告超长消息
+    if (content.length > SECURITY_LIMITS.MAX_MESSAGE_LENGTH_WARN) {
+        console.warn(`[Security] Message length warning: ${content.length} characters`);
+    }
+    return { valid: true, sanitized: content };
+}
+/**
+ * 检查是否包含敏感路径
+ */
+function containsSensitivePath(text) {
+    if (!text)
+        return false;
+    const lowerText = text.toLowerCase();
+    return SECURITY_LIMITS.SENSITIVE_PATHS.some(path => lowerText.includes(path.toLowerCase()));
+}
+/**
+ * 清理错误信息中的敏感内容
+ */
+function sanitizeErrorMessage(error) {
+    const message = typeof error === 'string' ? error : (error.message || '未知错误');
+    // 移除文件路径
+    let sanitized = message.replace(/\/[^\s]+\.(ts|js|json|py|yaml|yml|env|key|pem)/gi, '[PATH_REDACTED]');
+    // 移除可能的 IP 地址
+    sanitized = sanitized.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '[IP_REDACTED]');
+    // 移除端口号
+    sanitized = sanitized.replace(/:\d{4,5}/g, ':[PORT_REDACTED]');
+    // 移除敏感路径
+    for (const path of SECURITY_LIMITS.SENSITIVE_PATHS) {
+        const regex = new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        sanitized = sanitized.replace(regex, '[PATH_REDACTED]');
+    }
+    // 使用已有的敏感信息过滤
+    sanitized = sanitizeResponse(sanitized);
+    return sanitized;
+}
+// ============ API Key Security Protection ============
+/**
+ * 敏感信息模式列表
+ * 用于检测和过滤 AI 响应中的敏感信息
+ */
+const SENSITIVE_PATTERNS = [
+    // ============ API Keys ============
+    // OpenAI API Key (sk-xxx)
+    {
+        pattern: /sk-[a-zA-Z0-9]{20,}/g,
+        replacement: "[API_KEY_REDACTED]",
+        description: "OpenAI API Key"
+    },
+    // Anthropic API Key (sk-ant-xxx)
+    {
+        pattern: /sk-ant-[a-zA-Z0-9-]{20,}/g,
+        replacement: "[API_KEY_REDACTED]",
+        description: "Anthropic API Key"
+    },
+    // 阿里云百炼 API Key (sk-sp-xxx, sk-xxx)
+    {
+        pattern: /sk-[a-zA-Z]{0,10}-[a-zA-Z0-9]{20,}/g,
+        replacement: "[API_KEY_REDACTED]",
+        description: "Bailian/Aliyun API Key"
+    },
+    // Generic sk- prefix keys (catch-all for any sk- format)
+    {
+        pattern: /sk-[a-zA-Z0-9-]{30,}/g,
+        replacement: "[API_KEY_REDACTED]",
+        description: "Generic sk- API Key"
+    },
+    // Google API Key (AIza-xxx)
+    {
+        pattern: /AIza[a-zA-Z0-9_-]{35}/g,
+        replacement: "[API_KEY_REDACTED]",
+        description: "Google API Key"
+    },
+    // Azure API Key
+    {
+        pattern: /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,
+        replacement: "[API_KEY_REDACTED]",
+        description: "Azure API Key/UUID"
+    },
+    // DeepSeek API Key (sk-xxx)
+    {
+        pattern: /sk-[a-f0-9]{32,}/gi,
+        replacement: "[API_KEY_REDACTED]",
+        description: "DeepSeek API Key"
+    },
+    // Generic API Keys in quotes (捕获更多格式)
+    {
+        pattern: /['"`]([a-zA-Z0-9_-]{32,})['"`]/g,
+        replacement: "'[API_KEY_REDACTED]'",
+        description: "Generic API Key in quotes"
+    },
+    // Generic API Keys (common formats)
+    {
+        pattern: /\b[aA][pP][iI][-_]?[kK][eE][yY][-_]?\s*[=:]\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/g,
+        replacement: "[API_KEY_REDACTED]",
+        description: "Generic API Key"
+    },
+    // ============ Tokens ============
+    // Bearer tokens
+    {
+        pattern: /Bearer\s+[a-zA-Z0-9_-]{20,}/g,
+        replacement: "Bearer [TOKEN_REDACTED]",
+        description: "Bearer Token"
+    },
+    // JWT tokens
+    {
+        pattern: /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g,
+        replacement: "[JWT_REDACTED]",
+        description: "JWT Token"
+    },
+    // Database connection strings
+    {
+        pattern: /postgres(ql)?:\/\/[^:]+:[^@]+@[^\s]+/g,
+        replacement: "[DB_CONNECTION_REDACTED]",
+        description: "PostgreSQL Connection String"
+    },
+    {
+        pattern: /mysql:\/\/[^:]+:[^@]+@[^\s]+/g,
+        replacement: "[DB_CONNECTION_REDACTED]",
+        description: "MySQL Connection String"
+    },
+    {
+        pattern: /mongodb(\+srv)?:\/\/[^:]+:[^@]+@[^\s]+/g,
+        replacement: "[DB_CONNECTION_REDACTED]",
+        description: "MongoDB Connection String"
+    },
+    // Redis connection strings
+    {
+        pattern: /redis:\/\/[^:]*:[^@]+@[^\s]+/g,
+        replacement: "[REDIS_REDACTED]",
+        description: "Redis Connection String"
+    },
+    // AWS Access Keys
+    {
+        pattern: /AKIA[A-Z0-9]{16}/g,
+        replacement: "[AWS_KEY_REDACTED]",
+        description: "AWS Access Key"
+    },
+    // Generic secrets in config format
+    {
+        pattern: /['"](sk-[a-zA-Z0-9]{20,})['"]/g,
+        replacement: '"[SECRET_REDACTED]"',
+        description: "Secret in quotes"
+    },
+    // Environment variable patterns
+    {
+        pattern: /OPENAI_API_KEY\s*=\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/gi,
+        replacement: "OPENAI_API_KEY=[REDACTED]",
+        description: "OpenAI API Key env"
+    },
+    {
+        pattern: /ANTHROPIC_API_KEY\s*=\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/gi,
+        replacement: "ANTHROPIC_API_KEY=[REDACTED]",
+        description: "Anthropic API Key env"
+    },
+    {
+        pattern: /API_KEY\s*=\s*['"]?[a-zA-Z0-9_-]{20,}['"]?/gi,
+        replacement: "API_KEY=[REDACTED]",
+        description: "Generic API Key env"
+    },
+];
+/**
+ * 过滤敏感信息
+ * 从文本中移除所有敏感信息模式
+ *
+ * @param text 原始文本
+ * @returns 过滤后的安全文本
+ */
+function sanitizeResponse(text) {
+    if (!text)
+        return text;
+    let sanitized = text;
+    for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+        sanitized = sanitized.replace(pattern, replacement);
+    }
+    return sanitized;
+}
+/**
+ * 检查文本是否包含敏感信息
+ * 用于日志警告
+ *
+ * @param text 要检查的文本
+ * @returns 是否包含敏感信息
+ */
+function containsSensitiveInfo(text) {
+    if (!text)
+        return false;
+    for (const { pattern } of SENSITIVE_PATTERNS) {
+        if (pattern.test(text)) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * 安全日志输出
+ * 确保日志中不包含敏感信息
+ */
+function safeLog(logFn, prefix, text, maxLength = 100) {
+    const safeText = sanitizeResponse(text.substring(0, maxLength));
+    logFn(`${prefix}${safeText}${text.length > maxLength ? "..." : ""}`);
+}
+function getInboundCounters(accountId) {
+    const existing = inboundCountersByAccount.get(accountId);
+    if (existing) {
+        return existing;
+    }
+    const created = {
+        received: 0,
+        processed: 0,
+        dedupSkipped: 0,
+        inflightSkipped: 0,
+        failed: 0,
+    };
+    inboundCountersByAccount.set(accountId, created);
+    return created;
+}
+// ============ Channel Plugin Definition ============
+export const pinsonbotPlugin = {
+    id: "pinsonbot",
+    meta: {
+        id: "pinsonbot",
+        label: "PinsonBot",
+        selectionLabel: "PinsonBot (微信机器人)",
+        docsPath: "/channels/pinsonbot",
+        blurb: "PinsonBots Platform 微信机器人通道，支持多账号管理。",
+        aliases: ["pb", "pinson"],
+    },
+    configSchema: pluginSdk.buildChannelConfigSchema(PinsonBotConfigSchema),
+    capabilities: {
+        chatTypes: ["direct", "group"],
+        reactions: false,
+        threads: false,
+        media: true, // 启用媒体功能：支持图片、音频、视频
+        nativeCommands: false,
+        blockStreaming: false,
+    },
+    reload: { configPrefixes: ["channels.pinsonbot"] },
+    // ============ Config Adapter ============
+    config: {
+        listAccountIds: (cfg) => listAccountIds(cfg),
+        resolveAccount: (cfg, accountId) => resolveAccount(cfg, accountId),
+        defaultAccountId: () => "default",
+        isConfigured: (account) => Boolean(account.config?.accounts &&
+            Object.values(account.config.accounts).some((acc) => acc.lobsterId && acc.internalToken)),
+        describeAccount: (account) => ({
+            accountId: account.accountId,
+            name: account.name || "PinsonBot",
+            enabled: account.enabled,
+            configured: account.configured,
+        }),
+    },
+    // ============ Security Adapter ============
+    security: {
+        resolveDmPolicy: ({ account }) => ({
+            policy: "open",
+            allowFrom: [],
+            policyPath: "channels.pinsonbot.dmPolicy",
+            allowFromPath: "channels.pinsonbot.allowFrom",
+            approveHint: "使用 /allow pinsonbot:<userId> 批准用户",
+            normalizeEntry: (raw) => raw.replace(/^(pinsonbot|pb):/i, ""),
+        }),
+    },
+    // ============ Groups Adapter ============
+    groups: {
+        resolveRequireMention: () => false,
+        resolveGroupIntroHint: ({ groupId }) => groupId ? `PinsonBot sessionId=${groupId}` : undefined,
+    },
+    // ============ Messaging Adapter ============
+    messaging: {
+        normalizeTarget: (raw) => raw ? raw.replace(/^(pinsonbot|pb):/i, "") : undefined,
+        targetResolver: {
+            looksLikeId: (id) => /^[\w+\-/=]+$/.test(id),
+            hint: "<sessionId>",
+        },
+    },
+    // ============ Actions Adapter ============
+    actions: {
+        listActions: () => ["send"],
+        supportsAction: ({ action }) => action === "send",
+        extractToolSend: ({ args }) => pluginSdk.extractToolSend(args, "sendMessage"),
+        handleAction: async ({ action, params, cfg, accountId, dryRun }) => {
+            if (action !== "send") {
+                throw new Error(`Action ${action} is not supported for provider pinsonbot.`);
+            }
+            const to = pluginSdk.readStringParam(params, "to", {
+                required: true,
+            });
+            const message = pluginSdk.readStringParam(params, "message", {
+                required: true,
+            });
+            if (dryRun) {
+                return pluginSdk.jsonResult({ ok: true, dryRun: true, to });
+            }
+            // Find client for this account
+            const client = activeClients.get(accountId || "default");
+            if (!client) {
+                throw new Error("PinsonBot channel not connected. Is the gateway running?");
+            }
+            // Send message through WebSocket
+            const success = client.sendAssistantResponse(message, to);
+            if (!success) {
+                throw new Error("Failed to send message - client not connected");
+            }
+            return pluginSdk.jsonResult({ ok: true, to });
+        },
+    },
+    // ============ Outbound Adapter ============
+    outbound: {
+        deliveryMode: "direct",
+        resolveTarget: ({ to }) => {
+            const trimmed = to?.trim();
+            if (!trimmed) {
+                return {
+                    ok: false,
+                    error: new Error("PinsonBot message requires --to <sessionId>"),
+                };
+            }
+            return { ok: true, to: trimmed };
+        },
+        sendText: async ({ cfg, to, text, accountId, log }) => {
+            const client = activeClients.get(accountId || "default");
+            if (!client) {
+                throw new Error("PinsonBot channel not connected");
+            }
+            const success = client.sendAssistantResponse(text, to);
+            if (!success) {
+                throw new Error("Failed to send message");
+            }
+            return {
+                channel: "pinsonbot",
+                messageId: `pb-${Date.now()}`,
+            };
+        },
+        // ============ Media Support ============
+        sendMedia: async ({ cfg, to, mediaUrl, mediaType, accountId, log }) => {
+            const client = activeClients.get(accountId || "default");
+            if (!client) {
+                throw new Error("PinsonBot channel not connected");
+            }
+            const success = client.sendMediaResponse(mediaUrl, mediaType, to);
+            if (!success) {
+                throw new Error("Failed to send media");
+            }
+            return {
+                channel: "pinsonbot",
+                messageId: `pb-media-${Date.now()}`,
+            };
+        },
+    },
+    // ============ Gateway Adapter (core) ============
+    gateway: {
+        startAccount: async (ctx) => {
+            const { account, cfg, abortSignal } = ctx;
+            const config = account.config;
+            // Initialize auto-updater (once per plugin load)
+            const updater = getUpdater(PLUGIN_DIR);
+            updater.setNotifyCallback((message) => {
+                ctx.log?.info?.(`[Updater] ${message}`);
+            });
+            // Disable auto-update for local development (local version is newer than GitHub Release)
+            // updater.setAutoInstall(true);
+            // updater.startPeriodicCheck(6 * 60 * 60 * 1000);
+            // Get account config
+            const accountConfig = config.accounts?.[account.accountId];
+            if (!accountConfig?.lobsterId || !accountConfig?.internalToken) {
+                throw new Error("PinsonBot lobsterId and internalToken are required");
+            }
+            ctx.log?.info?.(`[${account.accountId}] Initializing PinsonBot WebSocket client...`);
+            ctx.log?.info?.(`[${account.accountId}] Lobster ID: ${accountConfig.lobsterId}`);
+            // Create WebSocket client
+            const client = new PinsonBotWSClient(accountConfig.lobsterId, accountConfig.internalToken, config.endpoint, {
+                maxReconnectAttempts: config.retry?.maxAttempts,
+                reconnectDelay: config.retry?.delayMs,
+                reconnectBackoff: config.retry?.backoffMultiplier,
+            });
+            // Track active client
+            activeClients.set(account.accountId, client);
+            // Setup event handlers
+            client.on("connected", () => {
+                ctx.setStatus?.({
+                    ...ctx.getStatus?.(),
+                    running: true,
+                    lastStartAt: Date.now(),
+                    lastError: null,
+                });
+                ctx.log?.info?.(`[${account.accountId}] Connected to PinsonBots Platform`);
+            });
+            client.on("disconnected", ({ code, reason }) => {
+                // Clear stale in-flight locks on disconnect
+                const keyPrefix = `${account.accountId}:`;
+                for (const key of processingDedupKeys.keys()) {
+                    if (key.startsWith(keyPrefix)) {
+                        processingDedupKeys.delete(key);
+                    }
+                }
+                // Only set lastError for abnormal disconnects (not normal close or reconnects)
+                const isError = code !== 1000 && code !== 1001;
+                ctx.setStatus?.({
+                    ...ctx.getStatus?.(),
+                    running: false,
+                    lastError: isError ? `Disconnected: ${code} ${reason}` : null,
+                });
+                if (isError) {
+                    ctx.log?.warn?.(`[${account.accountId}] Disconnected: ${code} ${reason}`);
+                }
+                else {
+                    ctx.log?.info?.(`[${account.accountId}] Disconnected: ${code} ${reason}`);
+                }
+            });
+            client.on("user_message", async ({ content, sessionId, conversationId, userId, userRole, images, audio, video, attachments, }) => {
+                await handleInboundMessage({ content, sessionId, conversationId, userId, userRole, images, audio, video, attachments }, client, ctx, account);
+            });
+            client.on("error", ({ type, error }) => {
+                ctx.log?.error?.(`[${account.accountId}] Client error (${type}): ${error.message}`);
+            });
+            client.on("heartbeat_failed", ({ consecutiveFailures, stats }) => {
+                ctx.log?.warn?.(`[${account.accountId}] Heartbeat failed ${consecutiveFailures} times. Success rate: ${stats.successRate?.toFixed(2)}%`);
+            });
+            // Track abort listener for cleanup
+            let abortListener = null;
+            let isStopped = false;
+            // Check if already aborted
+            if (abortSignal?.aborted) {
+                ctx.log?.warn?.(`[${account.accountId}] Abort signal already active, skipping connection`);
+                throw new Error("Connection aborted before start");
+            }
+            // Connect and wait for initial connection (with timeout)
+            client.connect();
+            // Wait for connection to establish (up to 10 seconds)
+            const connectionTimeout = 10000;
+            const connectionPromise = new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error("Connection timeout"));
+                }, connectionTimeout);
+                client.once("connected", () => {
+                    clearTimeout(timeout);
+                    resolve();
+                });
+                client.once("error", (err) => {
+                    clearTimeout(timeout);
+                    reject(err.error);
+                });
+            });
+            try {
+                await connectionPromise;
+            }
+            catch (error) {
+                ctx.log?.error?.(`[${account.accountId}] Failed to connect: ${error}`);
+                throw error;
+            }
+            // Explicitly set running status before returning
+            ctx.setStatus?.({
+                ...ctx.getStatus?.(),
+                running: true,
+                lastStartAt: Date.now(),
+                lastError: null,
+            });
+            ctx.log?.info?.(`[${account.accountId}] PinsonBot plugin initialized`);
+            // Return a Promise that stays pending until stopped via abortSignal
+            // Gateway expects startAccount to stay pending; it uses abortSignal to signal stop
+            return new Promise((resolve) => {
+                const cleanup = () => {
+                    if (isStopped)
+                        return;
+                    isStopped = true;
+                    ctx.log?.info?.(`[${account.accountId}] Stopping PinsonBot plugin...`);
+                    if (abortListener && abortSignal) {
+                        abortSignal.removeEventListener("abort", abortListener);
+                    }
+                    client.disconnect();
+                    activeClients.delete(account.accountId);
+                    ctx.setStatus?.({
+                        ...ctx.getStatus?.(),
+                        running: false,
+                        lastStopAt: Date.now(),
+                    });
+                    ctx.log?.info?.(`[${account.accountId}] PinsonBot plugin stopped`);
+                    resolve({
+                        stop: cleanup // Return stop function for Gateway to call
+                    });
+                };
+                // Set up abort listener to stop and resolve the promise
+                if (abortSignal) {
+                    abortListener = cleanup;
+                    abortSignal.addEventListener("abort", abortListener);
+                }
+            });
+        },
+    },
+};
+// ============ Inbound Message Handler ============
+async function handleInboundMessage(message, client, ctx, account) {
+    const { content, sessionId, conversationId, userId, userRole, images, audio, video, attachments } = message;
+    // ============ Security: Rate Limiting ============
+    const rateCheck = checkRateLimit(sessionId);
+    if (!rateCheck.allowed) {
+        ctx.log?.warn?.(`[${account.accountId}] Rate limit exceeded for session: ${sessionId}`);
+        client.sendAssistantResponse(`⚠️ 消息发送过快，请等待 ${Math.ceil(rateCheck.resetIn / 1000)} 秒后再试`, sessionId);
+        return;
+    }
+    // ============ Security: SessionId Validation ============
+    const sessionIdCheck = validateSessionId(sessionId);
+    if (!sessionIdCheck.valid) {
+        ctx.log?.warn?.(`[${account.accountId}] Invalid sessionId: ${sessionIdCheck.error}`);
+        // 不返回详细错误，只返回通用错误
+        client.sendAssistantResponse("⚠️ 会话格式无效", sessionId);
+        return;
+    }
+    // ============ Security: Message Content Validation ============
+    const contentCheck = validateMessageContent(content || "");
+    if (!contentCheck.valid) {
+        ctx.log?.warn?.(`[${account.accountId}] Message validation failed: ${contentCheck.error}`);
+        client.sendAssistantResponse("⚠️ 消息内容过长，请缩短后重试", sessionId);
+        return;
+    }
+    const safeContent = contentCheck.sanitized || "";
+    // ============ Security: Media Validation ============
+    const mediaCheck = validateMedia(images, audio, video, attachments);
+    if (!mediaCheck.valid) {
+        ctx.log?.warn?.(`[${account.accountId}] Media validation failed: ${mediaCheck.errors.join(', ')}`);
+        client.sendAssistantResponse(`⚠️ 多媒体验证失败：${mediaCheck.errors[0]}`, sessionId);
+        return;
+    }
+    // Debug: log the full message structure (sanitized)
+    ctx.log?.info?.(`[${account.accountId}] DEBUG handleInboundMessage: ${JSON.stringify({
+        content: safeContent?.substring(0, 50) + (safeContent?.length > 50 ? '...' : ''),
+        sessionId,
+        conversationId,
+        userId,
+        userRole,
+        images: images?.length || 0,
+        audio: audio?.length || 0,
+        video: video?.length || 0,
+        attachments: attachments?.length || 0,
+        rateLimit: { remaining: rateCheck.remaining },
+    })}`);
+    const stats = getInboundCounters(account.accountId);
+    stats.received += 1;
+    // Log message with media info
+    const mediaInfo = [];
+    if (images?.length)
+        mediaInfo.push(`${images.length} image(s)`);
+    if (audio?.length)
+        mediaInfo.push(`${audio.length} audio(s)`);
+    if (video?.length)
+        mediaInfo.push(`${video.length} video(s)`);
+    if (attachments?.length)
+        mediaInfo.push(`${attachments.length} attachment(s)`);
+    ctx.log?.info?.(`[${account.accountId}] User message: ${safeContent.substring(0, 100)}${safeContent.length > 100 ? "..." : ""}${mediaInfo.length ? ` [Media: ${mediaInfo.join(', ')}]` : ''}`);
+    // ============ Security Isolation: Identify Role ============
+    // user_role 只有两种状态：owner | guest
+    // - owner: 用户是 lobster_id 的主人 → admin 权限
+    // - guest: 其他所有情况 → user 权限
+    let role = "user";
+    let targetAgentId = "user";
+    if (userRole === "owner") {
+        role = "admin";
+        targetAgentId = "admin";
+    }
+    else if (userRole === "guest") {
+        role = "user";
+        targetAgentId = "user";
+    }
+    else {
+        // Fallback: use session pattern detection for backward compatibility
+        const sessionKeyForRole = sessionId.startsWith('pinsonbot:') ? sessionId : `pinsonbot:${sessionId}`;
+        role = getSessionRole(sessionKeyForRole);
+        targetAgentId = getTargetAgentId(sessionKeyForRole);
+    }
+    // SessionKey 逻辑：
+    // - 如果 sessionId 已包含 `:` 说明是完整格式（群聊或新格式），直接使用
+    // - 否则构建新格式：pinsonbot:{lobster_id}:{user_role}:{user_id}
+    let sessionKey;
+    if (sessionId.includes(':')) {
+        // 已经是完整格式，直接使用
+        sessionKey = sessionId;
+    }
+    else {
+        // 旧格式（纯数字），构建新格式
+        const lobsterId = account.config.accounts?.[account.accountId]?.lobsterId || "unknown";
+        const effectiveUserRole = userRole || (role === "admin" ? "admin" : "user");
+        const effectiveUserId = userId || "unknown";
+        sessionKey = `pinsonbot:${lobsterId}:${effectiveUserRole}:${effectiveUserId}`;
+    }
+    ctx.log?.info?.(`[${account.accountId}] Session: ${sessionKey}, Role: ${role}, Target Agent: ${targetAgentId}`);
+    // Security Isolation: 根据角色添加权限提示
+    const rolePrompt = role === "admin"
+        ? `\n\n[系统提示：你是管理员助手，拥有完整权限。你可以执行命令、修改文件、管理系统等管理员操作。请谨慎使用这些权限，确保操作安全。]\n\n`
+        : `\n\n[系统提示：你是用户助手，只能使用安全的工具（搜索、阅读）。如果用户请求执行命令、修改文件或其他管理员操作，请礼貌地告知这需要管理员权限，建议用户联系管理员。]\n\n`;
+    // 根据角色添加权限提示
+    const processedContent = rolePrompt + safeContent;
+    // Message deduplication
+    const dedupKey = `${account.accountId}:${sessionId}:${safeContent}:${Date.now()}`;
+    if (isMessageProcessed(dedupKey)) {
+        ctx.log?.debug?.(`[${account.accountId}] Skipping duplicate message`);
+        stats.dedupSkipped += 1;
+        return;
+    }
+    // In-flight guard
+    const inflightSince = processingDedupKeys.get(dedupKey);
+    if (inflightSince !== undefined) {
+        if (Date.now() - inflightSince > INFLIGHT_TTL_MS) {
+            processingDedupKeys.delete(dedupKey);
+        }
+        else {
+            ctx.log?.debug?.(`[${account.accountId}] Skipping in-flight duplicate`);
+            stats.inflightSkipped += 1;
+            return;
+        }
+    }
+    processingDedupKeys.set(dedupKey, Date.now());
+    // Send typing indicator
+    client.sendTypingIndicator(sessionId, true);
+    try {
+        // Check if channelRuntime is available for AI dispatch
+        if (!ctx.channelRuntime?.reply) {
+            ctx.log?.error?.(`[${account.accountId}] channelRuntime.reply not available - cannot dispatch AI`);
+            client.sendTypingIndicator(sessionId, false);
+            client.sendAssistantResponse("⚠️ AI 服务配置错误，请联系管理员", sessionId);
+            stats.failed += 1;
+            return;
+        }
+        let fullResponse = "";
+        let lastUsage = {};
+        // ============ Prepare Media Attachments for OpenClaw ============
+        // Convert to OpenClaw's GetReplyOptions.images format
+        const replyImages = [];
+        // Add explicit images
+        if (images?.length) {
+            replyImages.push(...images);
+        }
+        // Add image-type attachments
+        if (attachments?.length) {
+            for (const att of attachments) {
+                if (att.type === "image") {
+                    replyImages.push(createImageContent(att.data, att.mimeType));
+                }
+            }
+        }
+        if (replyImages.length > 0) {
+            ctx.log?.info?.(`[${account.accountId}] Passing ${replyImages.length} image(s) to OpenClaw AI`);
+        }
+        // Use OpenClaw's reply dispatcher for AI response
+        // Security Isolation: Pass role and target agent in context
+        ctx.log?.info?.(`[${account.accountId}] Calling dispatchReplyWithBufferedBlockDispatcher (role=${role}, agent=${targetAgentId}, images=${replyImages.length})...`);
+        const result = await ctx.channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
+            ctx: {
+                cfg: ctx.cfg,
+                peerId: sessionId,
+                text: processedContent,
+                Body: processedContent,
+                BodyForAgent: processedContent,
+                SessionKey: sessionKey,
+                AccountId: account.accountId,
+                ChatType: "direct",
+                From: sessionId,
+                // Security Isolation: Add role and target agent info
+                _securityContext: {
+                    role,
+                    targetAgentId,
+                    isAdmin: role === "admin",
+                },
+            },
+            cfg: ctx.cfg,
+            dispatcherOptions: {
+                deliver: async (payload) => {
+                    ctx.log?.info?.(`[${account.accountId}] deliver callback called`);
+                    let text = payload.text || "";
+                    // ============ Security: Sanitize response before sending ============
+                    // 流式输出时实时过滤敏感信息
+                    if (text && containsSensitiveInfo(text)) {
+                        ctx.log?.warn?.(`[${account.accountId}] ⚠️ Detected sensitive info in streaming response, sanitizing...`);
+                        text = sanitizeResponse(text);
+                    }
+                    if (text) {
+                        fullResponse += text;
+                        client.sendStreamToken(text, sessionId);
+                    }
+                    // 捕获 usage 数据（如果 payload 中包含）
+                    if (payload.usage) {
+                        const u = payload.usage;
+                        lastUsage = {
+                            input: u.input || u.input_tokens,
+                            output: u.output || u.output_tokens,
+                            totalTokens: u.total || u.totalTokens,
+                            model: payload.model,
+                            provider: payload.provider,
+                        };
+                    }
+                },
+            },
+            replyOptions: {
+                // Pass images to OpenClaw (ACP standard)
+                images: replyImages.length > 0 ? replyImages : undefined,
+                // 在模型选择时捕获模型信息
+                onModelSelected: (modelCtx) => {
+                    lastUsage.model = modelCtx.model;
+                    lastUsage.provider = modelCtx.provider;
+                },
+            },
+        });
+        ctx.log?.info?.(`[${account.accountId}] dispatchReply result: received`);
+        // End typing
+        client.sendTypingIndicator(sessionId, false);
+        // ============ Security: Final sanitization before sending ============
+        // 最终响应发送前再次过滤敏感信息
+        if (fullResponse) {
+            if (containsSensitiveInfo(fullResponse)) {
+                ctx.log?.warn?.(`[${account.accountId}] ⚠️ Detected sensitive info in final response, sanitizing...`);
+                fullResponse = sanitizeResponse(fullResponse);
+            }
+            client.sendAssistantResponse(fullResponse, sessionId, conversationId);
+        }
+        // ============ Send Token Usage to Platform ============
+        // 从 result.counts 获取实际的 API 调用次数
+        const apiCallCount = result?.counts?.final || 1;
+        // 发送当次会话的 token 使用数据和 API 调用次数
+        if (lastUsage.input || lastUsage.output || lastUsage.totalTokens) {
+            const tokenUsage = {
+                input_tokens: lastUsage.input,
+                output_tokens: lastUsage.output,
+                total_tokens: lastUsage.totalTokens,
+                model: lastUsage.model,
+                provider: lastUsage.provider,
+            };
+            client.sendTokenUsage(sessionId, tokenUsage);
+            ctx.log?.info?.(`[${account.accountId}] Token usage sent: input=${tokenUsage.input_tokens}, output=${tokenUsage.output_tokens}, model=${tokenUsage.model}`);
+        }
+        // 发送 API 调用统计（用于不支持 token usage 的模型，如百炼 Coding Plan）
+        if (lastUsage.model || lastUsage.provider) {
+            const apiCallStats = {
+                call_count: apiCallCount, // 从 dispatchReply result 获取实际调用次数
+                model: lastUsage.model,
+                provider: lastUsage.provider,
+            };
+            client.sendApiCall(sessionId, apiCallStats);
+            ctx.log?.info?.(`[${account.accountId}] API call stats sent: count=${apiCallCount}, model=${apiCallStats.model}, provider=${apiCallStats.provider}`);
+        }
+        // Security: 使用安全日志输出，确保日志中不包含敏感信息
+        safeLog((msg) => ctx.log?.info?.(msg), `[${account.accountId}] AI response: `, fullResponse, 100);
+        markMessageProcessed(dedupKey);
+        stats.processed += 1;
+    }
+    catch (error) {
+        // Security: 清理错误信息中的敏感内容
+        const safeErrorMessage = sanitizeErrorMessage(error);
+        ctx.log?.error?.(`[${account.accountId}] AI processing error: ${safeErrorMessage}`);
+        // End typing
+        client.sendTypingIndicator(sessionId, false);
+        // Security: 返回清理后的错误信息给用户
+        client.sendAssistantResponse(`⚠️ 处理失败，请稍后重试`, sessionId);
+        stats.failed += 1;
+    }
+    finally {
+        processingDedupKeys.delete(dedupKey);
+    }
+}
+// ============ Gateway AI Dispatch ============
+/**
+ * Dispatch a user message to OpenClaw Gateway AI using channelRuntime.
+ */
+async function dispatchToGatewayStreaming(ctx, message, sessionId, account, onToken) {
+    // Check if channelRuntime is available
+    if (!ctx.channelRuntime) {
+        ctx.log?.error?.(`[${account.accountId}] channelRuntime not available in context`);
+        return "⚠️ AI 服务暂时不可用（channelRuntime 未初始化）";
+    }
+    const { reply, routing } = ctx.channelRuntime;
+    if (!reply) {
+        ctx.log?.error?.(`[${account.accountId}] channelRuntime.reply not available`);
+        return "⚠️ AI 服务暂时不可用";
+    }
+    try {
+        // Build session key directly (avoid double prefix)
+        const sessionKey = sessionId.startsWith('pinsonbot:') ? sessionId : `pinsonbot:${sessionId}`;
+        ctx.log?.info?.(`[${account.accountId}] Dispatching to AI, sessionKey=${sessionKey}, message="${message}"`);
+        let fullResponse = "";
+        // Use dispatchReplyWithBufferedBlockDispatcher with proper MsgContext
+        const result = await reply.dispatchReplyWithBufferedBlockDispatcher({
+            ctx: {
+                channel: "pinsonbot",
+                peer: { id: sessionId, kind: "direct" },
+                Body: message,
+                BodyForAgent: message,
+                text: message,
+                sessionKey,
+                AccountId: account.accountId,
+                ChatType: "direct",
+            },
+            cfg: ctx.cfg,
+            dispatcherOptions: {
+                deliver: async (payload) => {
+                    const text = payload.text || "";
+                    if (text) {
+                        fullResponse += text;
+                        onToken(text);
+                    }
+                },
+            },
+        });
+        return fullResponse || "⚠️ 未收到回复";
+    }
+    catch (error) {
+        ctx.log?.error?.(`[${account.accountId}] AI dispatch error: ${error.message}`);
+        return `⚠️ 处理失败：${error.message}`;
+    }
+}
+//# sourceMappingURL=channel.js.map
