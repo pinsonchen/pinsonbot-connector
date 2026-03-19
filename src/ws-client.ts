@@ -107,7 +107,7 @@ export class PinsonBotWSClient extends EventEmitter {
     // Heartbeat options
     this.heartbeatIntervalMs = options.heartbeatIntervalMs || 30000;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs || 90000;
-    this.maxHeartbeatFailures = options.maxHeartbeatFailures || 3;
+    this.maxHeartbeatFailures = options.maxHeartbeatFailures || 10;
 
     // Build WebSocket URL with authentication
     const url = new URL(endpoint);
