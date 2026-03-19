@@ -1386,4 +1386,100 @@ export class PinsonBotWSClient extends EventEmitter {
       heartbeat: this.getHeartbeatStats(),
     };
   }
+
+  // ==================== Multi-Message Response (v2.16.0) ====================
+
+  /**
+   * Send multi-message response (one user input -> multiple AI responses)
+   * @param responses Array of response messages
+   * @param sessionId Session ID
+   * @param conversationId Optional conversation ID
+   */
+  sendMultiMessageResponse(
+    responses: Array<{ response_type: string; content: string; metadata?: any }>,
+    sessionId: string,
+    conversationId?: number
+  ): boolean {
+    let success = true;
+    
+    for (const response of responses) {
+      const data: any = {
+        content: response.content,
+        session_id: sessionId,
+        role: "assistant",
+        lobster_id: this.lobsterId,
+        response_type: response.response_type,
+        metadata: response.metadata,
+      };
+      
+      if (conversationId !== undefined) {
+        data.conversation_id = conversationId;
+      }
+      
+      const result = this.sendMessage({
+        type: "bot_response",
+        data,
+        timestamp: new Date().toISOString(),
+      });
+      
+      if (!result) success = false;
+    }
+    
+    console.log(`[PinsonBotWS] sendMultiMessageResponse: sent ${responses.length} messages`);
+    return success;
+  }
+
+  /**
+   * Send tool call notification
+   */
+  sendToolCallResponse(
+    toolName: string,
+    content: string,
+    sessionId: string,
+    conversationId?: number,
+    metadata?: any
+  ): boolean {
+    return this.sendMultiMessageResponse([
+      {
+        response_type: "tool_call",
+        content: content,
+        metadata: { toolName, ...metadata },
+      },
+    ], sessionId, conversationId);
+  }
+
+  /**
+   * Send tool execution result
+   */
+  sendToolResultResponse(
+    toolName: string,
+    content: string,
+    sessionId: string,
+    executionTimeMs?: number,
+    conversationId?: number
+  ): boolean {
+    return this.sendMultiMessageResponse([
+      {
+        response_type: "tool_result",
+        content: content,
+        metadata: { toolName, executionTimeMs },
+      },
+    ], sessionId, conversationId);
+  }
+
+  /**
+   * Send intermediate conclusion
+   */
+  sendIntermediateResponse(
+    content: string,
+    sessionId: string,
+    conversationId?: number
+  ): boolean {
+    return this.sendMultiMessageResponse([
+      {
+        response_type: "intermediate",
+        content: content,
+      },
+    ], sessionId, conversationId);
+  }
 }

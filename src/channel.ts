@@ -73,7 +73,7 @@ import type {
   MessageAttachment,
 } from "./types.js";
 import { createImageContent } from "./types.js";
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent } from "./types.js";
 
 // In-flight processing guard (memory-only, complementary to dedup)
 const INFLIGHT_TTL_MS = 5 * 60 * 1000;

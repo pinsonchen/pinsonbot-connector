@@ -1,6 +1,6 @@
 {
   "name": "pinsonbot",
-  "version": "2.15.3",
+  "version": "2.16.0",
   "description": "OpenClaw Channel Plugin for PinsonBots Platform with media support, security hardening, auto-update, and heartbeat mechanism",
   "main": "index.ts",
   "type": "module",
@@ -24,8 +24,9 @@
   "author": "pinsonchen",
   "license": "MIT",
   "dependencies": {
-    "openclaw": "file:../openclaw-sdk",
-    "ws": "^8.18.0"
+    "openclaw": "file:/usr/lib/node_modules/openclaw",
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
