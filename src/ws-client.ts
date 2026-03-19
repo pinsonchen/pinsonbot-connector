@@ -151,8 +151,11 @@ export class PinsonBotWSClient extends EventEmitter {
         this.stopPlatformRecoveryCheck();
         this.emit("connected", { lobsterId: this.lobsterId });
 
+        // Send auth frame first (required by platform v2.0+)
+        this.sendAuth();
+
         // Send metadata after connection
-        this.sendMetadata();
+        setTimeout(() => this.sendMetadata(), 100);
 
         // Start health checks (both WebSocket ping and application heartbeat)
         this.startHealthCheck();
@@ -457,6 +460,30 @@ export class PinsonBotWSClient extends EventEmitter {
    */
   isConnected(): boolean {
     return this.connected && this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Send auth frame (required by platform v2.0+ for first-frame authentication)
+   */
+  sendAuth(): boolean {
+    try {
+      const authMessage: any = {
+        type: "auth",
+        token: this.internalToken,
+        lobster_id: this.lobsterId,
+      };
+      console.log(`[PinsonBotWS] Sending auth frame: lobster_id=${this.lobsterId}`);
+      // Send raw WebSocket message (bypass WSMessage type)
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(authMessage));
+        console.log("[PinsonBotWS] Auth frame sent");
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("[PinsonBotWS] Failed to send auth:", error);
+      return false;
+    }
   }
 
   /**
