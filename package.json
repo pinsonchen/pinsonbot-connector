@@ -1,6 +1,6 @@
 {
   "name": "pinsonbot",
-  "version": "2.16.1",
+  "version": "2.17.0",
   "description": "OpenClaw Channel Plugin for PinsonBots Platform with media support, security hardening, auto-update, and heartbeat mechanism",
   "main": "index.ts",
   "type": "module",
@@ -25,6 +25,7 @@
   "license": "MIT",
   "dependencies": {
     "openclaw": "file:/usr/lib/node_modules/openclaw",
+    "@mariozechner/pi-agent-core": "0.61.1",
     "ws": "^8.18.0",
     "zod": "^4.3.6"
   },

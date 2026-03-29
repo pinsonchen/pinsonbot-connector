@@ -7,11 +7,14 @@
 import type {
   OpenClawConfig,
   OpenClawPluginApi,
-  ChannelLogSink as SDKChannelLogSink,
-  ChannelAccountSnapshot as SDKChannelAccountSnapshot,
   ChannelGatewayContext,
   ChannelPlugin,
 } from "openclaw/plugin-sdk";
+import type {
+  ChannelLogSink,
+  ChannelAccountSnapshot,
+} from "openclaw/plugin-sdk/channel-runtime";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 
 // ============ Plugin Module ============
 
@@ -77,9 +80,7 @@ export interface GatewayStopResult {
 }
 
 // ============ SDK Re-exports ============
-
-export type ChannelLogSink = SDKChannelLogSink;
-export type ChannelAccountSnapshot = SDKChannelAccountSnapshot;
+// Types are already imported above
 
 // ============ ACP Standard Media Types ============
 

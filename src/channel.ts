@@ -13,7 +13,17 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import * as pluginSdk from "openclaw/plugin-sdk";
+import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
+import { readStringParam, jsonResult } from "openclaw/plugin-sdk/discord-core";
+import { extractToolSend, type ChannelToolSend } from "openclaw/plugin-sdk/tool-send";
+import type { 
+  ChannelMessageActionContext,
+  ChannelMessageActionDiscoveryContext,
+  ChannelMessageToolDiscovery,
+  ChannelLogSink,
+  ChannelAccountSnapshot,
+} from "openclaw/plugin-sdk/channel-runtime";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
   getConfig,
   isConfigured,
@@ -598,7 +608,7 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
     aliases: ["pb", "pinson"],
   },
 
-  configSchema: pluginSdk.buildChannelConfigSchema(PinsonBotConfigSchema),
+  configSchema: buildChannelConfigSchema(PinsonBotConfigSchema),
 
   capabilities: {
     chatTypes: ["direct", "group"] as Array<"direct" | "group">,
@@ -673,26 +683,40 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
   // ============ Actions Adapter ============
 
   actions: {
-    listActions: () => ["send"],
+    describeMessageTool: (params: ChannelMessageActionDiscoveryContext): ChannelMessageToolDiscovery | null => {
+      return {
+        actions: ["send"],
+        capabilities: null,  // PinsonBot doesn't support special message capabilities
+        schema: null,
+      };
+    },
+
     supportsAction: ({ action }: { action: string }) => action === "send",
-    extractToolSend: ({ args }: { args: any }) =>
-      pluginSdk.extractToolSend(args, "sendMessage"),
-    handleAction: async ({ action, params, cfg, accountId, dryRun }: any) => {
+
+    extractToolSend: ({ args }: { args: Record<string, unknown> }): ChannelToolSend | null => {
+      const to = readStringParam(args, "to", { required: true });
+      if (!to) return null;
+      return {
+        to,
+        accountId: null,
+        threadId: null,
+      };
+    },
+
+    handleAction: async (ctx: ChannelMessageActionContext): Promise<AgentToolResult<unknown>> => {
+      const { action, params, cfg, accountId, dryRun } = ctx;
+      
       if (action !== "send") {
         throw new Error(
           `Action ${action} is not supported for provider pinsonbot.`
         );
       }
 
-      const to = pluginSdk.readStringParam(params, "to", {
-        required: true,
-      });
-      const message = pluginSdk.readStringParam(params, "message", {
-        required: true,
-      });
+      const to = readStringParam(params, "to", { required: true });
+      const message = readStringParam(params, "message", { required: true });
 
       if (dryRun) {
-        return pluginSdk.jsonResult({ ok: true, dryRun: true, to });
+        return jsonResult({ ok: true, dryRun: true, to });
       }
 
       // Find client for this account
@@ -710,7 +734,7 @@ export const pinsonbotPlugin: PinsonBotChannelPlugin = {
         throw new Error("Failed to send message - client not connected");
       }
 
-      return pluginSdk.jsonResult({ ok: true, to });
+      return jsonResult({ ok: true, to });
     },
   },
 

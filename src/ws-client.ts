@@ -1063,6 +1063,11 @@ export class PinsonBotWSClient extends EventEmitter {
         console.log(`[PinsonBotWS] History sync acknowledged: ${message.data?.session_id}`);
         break;
 
+      case "server_ping":
+        // Server keepalive ping — respond with server_pong
+        this.sendMessage({ type: "server_pong", data: {}, timestamp: new Date().toISOString() });
+        break;
+
       case "error":
         // Error from server
         console.error("[PinsonBotWS] Server error:", message.data);
